@@ -4,9 +4,8 @@ package application
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/bakhod1r/guard/identity/domain"
 )
@@ -22,13 +21,20 @@ func NewService(users domain.UserRepository, hasher domain.PasswordHasher, locko
 	return &Service{users: users, hasher: hasher, lockout: lockout, now: time.Now}
 }
 
-type RegisterInput struct {
+// CreateAccountInput attaches password credentials to a host-owned user.
+type CreateAccountInput struct {
+	UserID     string
 	Email      string
 	Password   string
 	Attributes map[string]any
 }
 
-func (s *Service) Register(ctx context.Context, in RegisterInput) (*domain.User, error) {
+// CreateAccount stores credentials for an existing host user.
+func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (*domain.User, error) {
+	id := strings.TrimSpace(in.UserID)
+	if id == "" {
+		return nil, domain.ErrInvalidUserID
+	}
 	email, err := domain.NewEmail(in.Email)
 	if err != nil {
 		return nil, err
@@ -46,13 +52,31 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (*domain.User,
 		attrs = map[string]any{}
 	}
 	u := &domain.User{
-		ID: NewID(), Email: email, Status: domain.StatusActive, PasswordHash: hash,
+		ID: domain.UserID(id), Email: email, Status: domain.StatusActive, PasswordHash: hash,
 		Attributes: attrs, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := s.users.Create(ctx, u); err != nil {
 		return nil, err
 	}
 	return u, nil
+}
+
+// SetPassword is an administrative reset: no old password, clears lockout.
+func (s *Service) SetPassword(ctx context.Context, id domain.UserID, newPassword string) error {
+	if err := domain.ValidatePassword(newPassword); err != nil {
+		return err
+	}
+	u, err := s.users.ByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if u.PasswordHash, err = s.hasher.Hash(newPassword); err != nil {
+		return err
+	}
+	u.FailedAttempts = 0
+	u.LastFailedAt = nil
+	u.UpdatedAt = s.now().UTC()
+	return s.users.Update(ctx, u)
 }
 
 // dummyHash equalizes timing when the email does not exist.
@@ -154,6 +178,3 @@ func (s *Service) SetAttributes(ctx context.Context, id domain.UserID, attrs map
 	u.UpdatedAt = s.now().UTC()
 	return s.users.Update(ctx, u)
 }
-
-// NewID returns a time-ordered UUIDv7.
-func NewID() domain.UserID { return domain.UserID(uuid.Must(uuid.NewV7()).String()) }

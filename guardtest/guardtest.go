@@ -17,7 +17,8 @@ import (
 	sessioninfra "github.com/bakhod1r/guard/session/infrastructure"
 )
 
-// New returns a seeded in-memory Guard. cfg.DB and cfg.Redis are ignored.
+// New returns a seeded in-memory Guard. cfg.DB and cfg.Redis are ignored;
+// any non-empty string is a valid user id (no host user table in memory).
 func New(rdb redis.UniversalClient, cfg guard.Config) *guard.Guard {
 	store := accessinfra.NewMemory()
 	g := guard.Build(guard.Repositories{
@@ -34,7 +35,7 @@ func New(rdb redis.UniversalClient, cfg guard.Config) *guard.Guard {
 	return g
 }
 
-// Seed mirrors kernel/migrations/sql/00002_guard_seed.sql.
+// Seed mirrors kernel/migrations/sql/00002_guard_seed.sql.tmpl and 00003.
 func Seed(ctx context.Context, store *accessinfra.Memory) {
 	_ = store.CreateRole(ctx, &accessdomain.Role{Name: "admin", Title: "Administrator", IsSystem: true, Wildcard: true})
 	_ = store.CreateRole(ctx, &accessdomain.Role{Name: "user", Title: "User", IsSystem: true})

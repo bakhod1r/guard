@@ -4,8 +4,8 @@
 -- the host application's own tables.
 --
 -- Identity model:
---   guard_user      = who someone is (email, status, ABAC attributes)
---   guard_identity  = how they authenticate (password hash, lockout counters)
+--   {{.UserTable}}  = host application's users (NOT created by Guard)
+--   guard_account   = login email, password hash, status, lockout, ABAC attributes
 --   sessions        = Redis, not PostgreSQL (see session/infrastructure)
 --
 -- Security model:
@@ -20,44 +20,33 @@
 --   3. strongest priority tier (lowest number) decides; DENY wins inside a tier
 --   4. no policy matched -> RBAC (wildcard role or granted permission)
 --   5. otherwise deny
--- Requires PostgreSQL 13+ (gen_random_uuid built in). IDs are UUIDv7 set by the app.
+-- Requires PostgreSQL 13+ (gen_random_uuid built in). Guard IDs are UUIDv7 set by the app;
+-- user ids use the host column type ({{.UserIDType}}).
 -- =============================================================
 
-CREATE TABLE IF NOT EXISTS guard_user (
-    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    email          VARCHAR(255) NOT NULL,
-    status         VARCHAR(16)  NOT NULL DEFAULT 'active',
-    attributes     JSONB        NOT NULL DEFAULT '{}'::jsonb,
-    last_login_at  TIMESTAMPTZ,
-    created_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT now(),
-
-    CONSTRAINT guard_user_status_valid CHECK (status IN ('pending', 'active', 'banned', 'suspended')),
-    CONSTRAINT guard_user_email_lower  CHECK (email = lower(email)),
-    CONSTRAINT guard_user_attributes_object CHECK (jsonb_typeof(attributes) = 'object')
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS guard_uq_user_email ON guard_user (email);
-CREATE INDEX IF NOT EXISTS guard_idx_user_status ON guard_user (status);
-
-
--- One row per authentication method. Only 'password' is implemented today;
--- the column exists so oauth / passkey can be added without a table rewrite.
-CREATE TABLE IF NOT EXISTS guard_identity (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id          UUID NOT NULL REFERENCES guard_user (id) ON DELETE CASCADE,
-    kind             VARCHAR(16)   NOT NULL DEFAULT 'password',
+-- Guard does NOT own the user table. {{.UserTable}}.{{.UserIDColumn}} ({{.UserIDType}})
+-- belongs to the host application; Guard only references it. One account row
+-- per host user holds the login identifier, password hash, status and ABAC attributes.
+CREATE TABLE IF NOT EXISTS guard_account (
+    user_id          {{.UserIDType}} PRIMARY KEY REFERENCES {{.UserTable}} ({{.UserIDColumn}}) ON DELETE CASCADE,
+    email            VARCHAR(255)  NOT NULL,
     secret           VARCHAR(1000) NOT NULL,
+    status           VARCHAR(16)   NOT NULL DEFAULT 'active',
+    attributes       JSONB         NOT NULL DEFAULT '{}'::jsonb,
     failed_attempts  INTEGER       NOT NULL DEFAULT 0,
     last_failed_at   TIMESTAMPTZ,
+    last_login_at    TIMESTAMPTZ,
     created_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ   NOT NULL DEFAULT now(),
 
-    CONSTRAINT guard_identity_kind_valid CHECK (kind IN ('password', 'oauth', 'passkey')),
-    CONSTRAINT guard_identity_failed_attempts_non_negative CHECK (failed_attempts >= 0)
+    CONSTRAINT guard_account_status_valid CHECK (status IN ('pending', 'active', 'banned', 'suspended')),
+    CONSTRAINT guard_account_email_lower  CHECK (email = lower(email)),
+    CONSTRAINT guard_account_attributes_object CHECK (jsonb_typeof(attributes) = 'object'),
+    CONSTRAINT guard_account_failed_attempts_non_negative CHECK (failed_attempts >= 0)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS guard_uq_identity_user_kind ON guard_identity (user_id, kind);
+CREATE UNIQUE INDEX IF NOT EXISTS guard_uq_account_email ON guard_account (email);
+CREATE INDEX IF NOT EXISTS guard_idx_account_status ON guard_account (status);
 
 
 CREATE TABLE IF NOT EXISTS guard_role (
@@ -95,7 +84,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS guard_uq_permission_code ON guard_permission (
 CREATE TABLE IF NOT EXISTS guard_role_permission (
     role_id        UUID NOT NULL REFERENCES guard_role (id) ON DELETE CASCADE,
     permission_id  UUID NOT NULL REFERENCES guard_permission (id) ON DELETE CASCADE,
-    granted_by     UUID REFERENCES guard_user (id) ON DELETE SET NULL,
+    granted_by     {{.UserIDType}} REFERENCES {{.UserTable}} ({{.UserIDColumn}}) ON DELETE SET NULL,
     granted_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (role_id, permission_id)
 );
@@ -104,9 +93,9 @@ CREATE INDEX IF NOT EXISTS guard_idx_role_permission_permission ON guard_role_pe
 
 
 CREATE TABLE IF NOT EXISTS guard_user_role (
-    user_id     UUID NOT NULL REFERENCES guard_user (id) ON DELETE CASCADE,
+    user_id     {{.UserIDType}} NOT NULL REFERENCES {{.UserTable}} ({{.UserIDColumn}}) ON DELETE CASCADE,
     role_id     UUID NOT NULL REFERENCES guard_role (id) ON DELETE CASCADE,
-    granted_by  UUID REFERENCES guard_user (id) ON DELETE SET NULL,
+    granted_by  {{.UserIDType}} REFERENCES {{.UserTable}} ({{.UserIDColumn}}) ON DELETE SET NULL,
     granted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- NULL = permanent. Expired rows are ignored by the evaluator, never auto-deleted.
     expires_at  TIMESTAMPTZ,
@@ -182,7 +171,8 @@ CREATE INDEX IF NOT EXISTS guard_idx_pc_group ON guard_policy_condition (group_i
 CREATE TABLE IF NOT EXISTS guard_audit_event (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     occurred_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    actor_id     UUID,
+    -- No FK: audit rows outlive deleted users.
+    actor_id     {{.UserIDType}},
     action       VARCHAR(64)  NOT NULL,
     target       VARCHAR(255),
     success      BOOLEAN      NOT NULL,
@@ -204,5 +194,4 @@ DROP TABLE IF EXISTS guard_user_role;
 DROP TABLE IF EXISTS guard_role_permission;
 DROP TABLE IF EXISTS guard_permission;
 DROP TABLE IF EXISTS guard_role;
-DROP TABLE IF EXISTS guard_identity;
-DROP TABLE IF EXISTS guard_user;
+DROP TABLE IF EXISTS guard_account;

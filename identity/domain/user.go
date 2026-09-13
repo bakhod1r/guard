@@ -18,6 +18,8 @@ var (
 	ErrUserBlocked        = errors.New("identity: user is banned or suspended")
 	ErrUserLocked         = errors.New("identity: too many failed attempts, try later")
 	ErrInvalidStatus      = errors.New("identity: invalid status")
+	ErrInvalidUserID      = errors.New("identity: user id is required")
+	ErrAccountExists      = errors.New("identity: user already has an account")
 )
 
 const (

@@ -14,12 +14,14 @@ import (
 )
 
 var (
-	ErrKeyNotFound  = errors.New("apikey: not found")
-	ErrKeyInvalid   = errors.New("apikey: invalid, expired or revoked")
-	ErrInvalidName  = errors.New("apikey: name must be 1-100 characters")
-	ErrInvalidScope = errors.New("apikey: scope must be resource.action, resource.* or *")
-	ErrNoScopes     = errors.New("apikey: at least one scope is required")
-	ErrBadExpiry    = errors.New("apikey: expires_at must be in the future")
+	ErrKeyNotFound = errors.New("apikey: not found")
+	// ErrOwnerNotFound means the owning host user id does not exist or is malformed for its column type.
+	ErrOwnerNotFound = errors.New("apikey: owner not found")
+	ErrKeyInvalid    = errors.New("apikey: invalid, expired or revoked")
+	ErrInvalidName   = errors.New("apikey: name must be 1-100 characters")
+	ErrInvalidScope  = errors.New("apikey: scope must be resource.action, resource.* or *")
+	ErrNoScopes      = errors.New("apikey: at least one scope is required")
+	ErrBadExpiry     = errors.New("apikey: expires_at must be in the future")
 )
 
 // TokenPrefix marks Guard API keys so they are recognisable in logs and secret scanners.

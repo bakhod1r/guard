@@ -8,28 +8,26 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bakhod1r/guard/access/domain"
+	"github.com/bakhod1r/guard/kernel/pgerr"
 )
 
 type Postgres struct{ db *pgxpool.Pool }
 
 func NewPostgres(db *pgxpool.Pool) *Postgres { return &Postgres{db: db} }
 
-func isUnique(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+// validUUID guards Guard-owned ids (policies) that are always UUID columns.
+func validUUID(s string) bool {
+	_, err := uuid.Parse(s)
+	return err == nil
 }
 
-func isFK(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23503"
-}
-
-func nullableUUID(s string) any {
-	if _, err := uuid.Parse(s); err != nil {
+// nullableUserID maps an empty host user id to SQL NULL. Non-empty ids are sent as
+// text; PostgreSQL coerces them to the host id type (bigint, uuid, text, ...).
+func nullableUserID(s string) any {
+	if s == "" {
 		return nil
 	}
 	return s
@@ -40,7 +38,7 @@ func nullableUUID(s string) any {
 func (r *Postgres) CreateRole(ctx context.Context, role *domain.Role) error {
 	_, err := r.db.Exec(ctx, `INSERT INTO guard_role (id, name, title, description, is_system, wildcard) VALUES ($1,$2,$3,$4,$5,$6)`,
 		uuid.Must(uuid.NewV7()).String(), role.Name, role.Title, role.Description, role.IsSystem, role.Wildcard)
-	if isUnique(err) {
+	if pgerr.IsUniqueViolation(err) {
 		return domain.ErrRoleExists
 	}
 	return err
@@ -104,7 +102,7 @@ func (r *Postgres) ListRoles(ctx context.Context) ([]domain.Role, error) {
 }
 
 func (r *Postgres) GrantsOf(ctx context.Context, userID string) ([]domain.RoleGrant, error) {
-	if nullableUUID(userID) == nil {
+	if userID == "" {
 		return []domain.RoleGrant{}, nil
 	}
 	rows, err := r.db.Query(ctx, `SELECT r.name, r.title, COALESCE(r.description,''), r.is_system, r.wildcard,
@@ -118,6 +116,9 @@ func (r *Postgres) GrantsOf(ctx context.Context, userID string) ([]domain.RoleGr
 		WHERE ur.user_id = $1
 		GROUP BY r.id, ur.granted_at, ur.expires_at
 		ORDER BY r.name`, userID)
+	if pgerr.IsInvalidText(err) {
+		return []domain.RoleGrant{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -162,9 +163,17 @@ func (r *Postgres) ListPermissions(ctx context.Context) ([]domain.Permission, er
 }
 
 func (r *Postgres) GrantPermission(ctx context.Context, role string, p domain.Permission, grantedBy string) error {
+	// VALUES (not INSERT ... SELECT) so PostgreSQL infers $3 as the host user id type;
+	// in a SELECT list an untyped parameter resolves to text and cannot be assigned to bigint/uuid.
 	tag, err := r.db.Exec(ctx, `INSERT INTO guard_role_permission (role_id, permission_id, granted_by)
-		SELECT r.id, p.id, $3 FROM guard_role r, guard_permission p WHERE r.name=$1 AND p.code=$2
-		ON CONFLICT DO NOTHING`, role, p.Code(), nullableUUID(grantedBy))
+		VALUES ((SELECT id FROM guard_role WHERE name=$1), (SELECT id FROM guard_permission WHERE code=$2), $3)
+		ON CONFLICT DO NOTHING`, role, p.Code(), nullableUserID(grantedBy))
+	if pgerr.IsNotNullViolation(err) {
+		return r.explainMissing(ctx, role, p)
+	}
+	if pgerr.IsInvalidText(err) || pgerr.IsForeignKeyViolation(err) {
+		return domain.ErrSubjectNotFound
+	}
 	if err != nil {
 		return err
 	}
@@ -197,30 +206,31 @@ func (r *Postgres) RevokePermission(ctx context.Context, role string, p domain.P
 }
 
 func (r *Postgres) AssignRole(ctx context.Context, userID, role, grantedBy string, expiresAt *time.Time) error {
-	if nullableUUID(userID) == nil {
+	if userID == "" {
 		return domain.ErrSubjectNotFound
 	}
-	tag, err := r.db.Exec(ctx, `INSERT INTO guard_user_role (user_id, role_id, granted_by, expires_at)
-		SELECT $1, r.id, $3, $4 FROM guard_role r WHERE r.name=$2
+	// VALUES so $1/$3 take the host user id type; a missing role yields role_id NULL (23502).
+	_, err := r.db.Exec(ctx, `INSERT INTO guard_user_role (user_id, role_id, granted_by, expires_at)
+		VALUES ($1, (SELECT id FROM guard_role WHERE name=$2), $3, $4)
 		ON CONFLICT (user_id, role_id) DO UPDATE SET granted_by=EXCLUDED.granted_by, granted_at=now(), expires_at=EXCLUDED.expires_at`,
-		userID, role, nullableUUID(grantedBy), expiresAt)
-	if isFK(err) {
+		userID, role, nullableUserID(grantedBy), expiresAt)
+	switch {
+	case pgerr.IsNotNullViolation(err):
+		return domain.ErrRoleNotFound
+	case pgerr.IsForeignKeyViolation(err), pgerr.IsInvalidText(err):
 		return domain.ErrSubjectNotFound
 	}
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() == 0 {
-		return domain.ErrRoleNotFound
-	}
-	return nil
+	return err
 }
 
 func (r *Postgres) UnassignRole(ctx context.Context, userID, role string) error {
-	if nullableUUID(userID) == nil {
+	if userID == "" {
 		return nil
 	}
 	_, err := r.db.Exec(ctx, `DELETE FROM guard_user_role ur USING guard_role r WHERE ur.role_id=r.id AND ur.user_id=$1 AND r.name=$2`, userID, role)
+	if pgerr.IsInvalidText(err) {
+		return nil
+	}
 	return err
 }
 
@@ -233,7 +243,7 @@ func (r *Postgres) SavePolicy(ctx context.Context, p *domain.Policy) error {
 			ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, resource=EXCLUDED.resource, action=EXCLUDED.action,
 				effect=EXCLUDED.effect, priority=EXCLUDED.priority, enabled=EXCLUDED.enabled, updated_at=now()`,
 			p.ID, p.Name, p.Resource, p.Action, string(p.Effect), p.Priority, p.Enabled)
-		if isUnique(err) {
+		if pgerr.IsUniqueViolation(err) {
 			return domain.ErrPolicyNameTaken
 		}
 		if err != nil {
@@ -274,7 +284,7 @@ func insertGroup(ctx context.Context, tx pgx.Tx, policyID string, parent *string
 }
 
 func (r *Postgres) DeletePolicy(ctx context.Context, id string) error {
-	if nullableUUID(id) == nil {
+	if !validUUID(id) {
 		return domain.ErrPolicyNotFound
 	}
 	tag, err := r.db.Exec(ctx, `DELETE FROM guard_policy WHERE id=$1`, id)
@@ -285,7 +295,7 @@ func (r *Postgres) DeletePolicy(ctx context.Context, id string) error {
 }
 
 func (r *Postgres) Policy(ctx context.Context, id string) (*domain.Policy, error) {
-	if nullableUUID(id) == nil {
+	if !validUUID(id) {
 		return nil, domain.ErrPolicyNotFound
 	}
 	list, err := r.loadPolicies(ctx, `WHERE id=$1`, id)

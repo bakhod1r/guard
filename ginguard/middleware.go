@@ -2,6 +2,7 @@
 package ginguard
 
 import (
+	"context"
 	"errors"
 	"math"
 	"net/http"
@@ -29,6 +30,11 @@ type Options struct {
 	AuthPath string
 	// AdminPath prefixes management routes. Default "/guard".
 	AdminPath string
+	// CreateUser inserts a row into the host user table for self-registration
+	// and returns its id. When nil, POST /register is not mounted and accounts
+	// are created by an admin (POST /guard/users/:id/account) or by the host via
+	// Guard.CreateAccount.
+	CreateUser func(ctx context.Context, email string) (userID string, err error)
 	// AuthRateLimit throttles /login and /register per client IP.
 	// Zero value: 10 requests per minute. Limit < 0 disables.
 	AuthRateLimit ratelimit.Rule
@@ -276,6 +282,8 @@ var errorMap = []struct {
 	{identitydomain.ErrUserBlocked, http.StatusForbidden, "account_blocked"},
 	{identitydomain.ErrEmailTaken, http.StatusConflict, "email_taken"},
 	{identitydomain.ErrUserNotFound, http.StatusNotFound, "user_not_found"},
+	{identitydomain.ErrInvalidUserID, http.StatusBadRequest, "invalid_user_id"},
+	{identitydomain.ErrAccountExists, http.StatusConflict, "account_exists"},
 	{sessiondomain.ErrSessionNotFound, http.StatusNotFound, "session_not_found"},
 	{accessdomain.ErrInvalidName, http.StatusBadRequest, "invalid_name"},
 	{accessdomain.ErrInvalidPermission, http.StatusBadRequest, "invalid_permission"},
@@ -293,6 +301,7 @@ var errorMap = []struct {
 	{apikeydomain.ErrNoScopes, http.StatusBadRequest, "invalid_scope"},
 	{apikeydomain.ErrBadExpiry, http.StatusBadRequest, "invalid_expiry"},
 	{apikeydomain.ErrKeyNotFound, http.StatusNotFound, "api_key_not_found"},
+	{apikeydomain.ErrOwnerNotFound, http.StatusNotFound, "user_not_found"},
 	{apikeydomain.ErrKeyInvalid, http.StatusUnauthorized, "unauthenticated"},
 }
 

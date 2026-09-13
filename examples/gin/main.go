@@ -17,6 +17,8 @@ import (
 
 	"github.com/bakhod1r/guard"
 	"github.com/bakhod1r/guard/ginguard"
+	identitydomain "github.com/bakhod1r/guard/identity/domain"
+	"github.com/bakhod1r/guard/kernel/pgerr"
 )
 
 func env(key, def string) string {
@@ -37,14 +39,19 @@ func main() {
 	rdb := redis.NewClient(&redis.Options{Addr: env("REDIS_ADDR", "localhost:6379"), Password: os.Getenv("REDIS_PASSWORD")})
 	defer rdb.Close()
 
-	g, err := guard.New(guard.Config{DB: pool, Redis: rdb})
+	// Stand-in for the host application's own user table. Guard never creates it.
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY, email TEXT UNIQUE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now())`); err != nil {
+		log.Fatal(err)
+	}
+
+	g, err := guard.New(guard.Config{DB: pool, Redis: rdb, UserTable: "users", UserIDColumn: "id"})
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	// 1. Put migrations into the project, 2. apply them.
+	// 1. Detect users.id type and render migrations into the project, 2. apply them.
 	dir := env("GUARD_MIGRATIONS_DIR", "./migrations/guard")
-	written, err := guard.WriteMigrations(dir)
+	written, err := g.WriteMigrations(ctx, dir)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -55,13 +62,30 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// Self-registration inserts a NEW host user only. Never link to an existing
+	// row here: that would let anyone set a password for someone else's account.
+	createUser := func(ctx context.Context, email string) (string, error) {
+		var id string
+		err := pool.QueryRow(ctx, `INSERT INTO users (email) VALUES (lower($1)) RETURNING id::text`, email).Scan(&id)
+		if pgerr.IsUniqueViolation(err) {
+			return "", identitydomain.ErrEmailTaken
+		}
+		return id, err
+	}
+
 	if email := os.Getenv("GUARD_ADMIN_EMAIL"); email != "" {
-		if _, err := g.EnsureAdmin(ctx, email, os.Getenv("GUARD_ADMIN_PASSWORD")); err != nil {
+		var id string
+		err := pool.QueryRow(ctx, `INSERT INTO users (email) VALUES (lower($1))
+			ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING id::text`, email).Scan(&id)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if _, err := g.EnsureAdmin(ctx, id, email, os.Getenv("GUARD_ADMIN_PASSWORD")); err != nil {
 			log.Fatal(err)
 		}
 	}
 
-	opts := ginguard.Options{InsecureCookie: os.Getenv("GUARD_INSECURE_COOKIE") == "1"}
+	opts := ginguard.Options{InsecureCookie: os.Getenv("GUARD_INSECURE_COOKIE") == "1", CreateUser: createUser}
 	r := gin.Default()
 	api := r.Group("/api")
 	ginguard.Mount(api, g, opts)

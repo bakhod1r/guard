@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +20,18 @@ import (
 	"github.com/bakhod1r/guard/guardtest"
 	"github.com/bakhod1r/guard/ratelimit"
 )
+
+// hostUsers simulates the host application's user table (bigint-like ids).
+func hostUsers() func(context.Context, string) (string, error) {
+	var mu sync.Mutex
+	next := 100
+	return func(context.Context, string) (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		next++
+		return strconv.Itoa(next), nil
+	}
+}
 
 type client struct {
 	t      *testing.T
@@ -48,7 +62,7 @@ func setup(t *testing.T) (client, *guard.Guard) {
 	g := guardtest.New(redis.NewClient(&redis.Options{Addr: mr.Addr()}), guard.Config{})
 	r := gin.New()
 	api := r.Group("/api")
-	ginguard.Mount(api, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: -1}})
+	ginguard.Mount(api, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: -1}, CreateUser: hostUsers()})
 	api.GET("/invoices/:id", ginguard.RequirePermission(g, ginguard.Options{}, "invoice.read"), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"id": c.Param("id")})
 	})
@@ -123,7 +137,7 @@ func TestAuthFlow(t *testing.T) {
 func TestAdminRBACAndABAC(t *testing.T) {
 	c, g := setup(t)
 	ctx := context.Background()
-	if _, err := g.EnsureAdmin(ctx, "admin@example.com", "admin-password"); err != nil {
+	if _, err := g.EnsureAdmin(ctx, "1", "admin@example.com", "admin-password"); err != nil {
 		t.Fatal(err)
 	}
 	_, body := c.do("POST", "/api/auth/login", "", map[string]any{"email": "admin@example.com", "password": "admin-password"})
@@ -215,7 +229,7 @@ func TestLockout(t *testing.T) {
 
 func TestAPIKeys(t *testing.T) {
 	c, g := setup(t)
-	if _, err := g.EnsureAdmin(context.Background(), "admin@example.com", "admin-password"); err != nil {
+	if _, err := g.EnsureAdmin(context.Background(), "1", "admin@example.com", "admin-password"); err != nil {
 		t.Fatal(err)
 	}
 	_, body := c.do("POST", "/api/auth/login", "", map[string]any{"email": "admin@example.com", "password": "admin-password"})
@@ -277,7 +291,7 @@ func TestAuthRateLimit(t *testing.T) {
 	mr := miniredis.RunT(t)
 	g := guardtest.New(redis.NewClient(&redis.Options{Addr: mr.Addr()}), guard.Config{})
 	r := gin.New()
-	ginguard.Mount(r, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: 3, Window: time.Minute}})
+	ginguard.Mount(r, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: 3, Window: time.Minute}, CreateUser: hostUsers()})
 	c := client{t: t, router: r}
 	for i := 0; i < 3; i++ {
 		if code, _ := c.do("POST", "/auth/login", "", map[string]any{"email": "n@example.com", "password": "whatever1"}); code != http.StatusUnauthorized {
@@ -299,5 +313,45 @@ func TestAuthRateLimit(t *testing.T) {
 		if code, _ := c2.do("POST", "/auth/login", "", map[string]any{"email": "z@example.com", "password": "whatever1"}); code == http.StatusTooManyRequests {
 			t.Fatal("disabled limiter still limits")
 		}
+	}
+}
+
+func TestHostUserAccounts(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mr := miniredis.RunT(t)
+	g := guardtest.New(redis.NewClient(&redis.Options{Addr: mr.Addr()}), guard.Config{})
+	r := gin.New()
+	ginguard.Mount(r, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: -1}}) // no CreateUser
+	c := client{t: t, router: r}
+
+	if code, _ := c.do("POST", "/auth/register", "", map[string]any{"email": "a@example.com", "password": "password123"}); code != http.StatusNotFound {
+		t.Fatalf("register must not be mounted without CreateUser: %d", code)
+	}
+	if _, err := g.EnsureAdmin(context.Background(), "1", "admin@example.com", "admin-password"); err != nil {
+		t.Fatal(err)
+	}
+	_, body := c.do("POST", "/auth/login", "", map[string]any{"email": "admin@example.com", "password": "admin-password"})
+	admin := body["token"].(string)
+
+	code, acc := c.do("POST", "/guard/users/555/account", admin, map[string]any{"email": "host@example.com", "password": "password123"})
+	if code != http.StatusCreated || acc["id"] != "555" {
+		t.Fatalf("link account: %d %v", code, acc)
+	}
+	if code, _ := c.do("POST", "/guard/users/555/account", admin, map[string]any{"email": "x@example.com", "password": "password123"}); code != http.StatusConflict {
+		t.Fatalf("second account: %d", code)
+	}
+	_, body = c.do("POST", "/auth/login", "", map[string]any{"email": "host@example.com", "password": "password123"})
+	userTok := body["token"].(string)
+	if code, _ := c.do("PUT", "/guard/users/555/password", userTok, map[string]any{"password": "hacked-password"}); code != http.StatusForbidden {
+		t.Fatalf("user reset own password via admin route: %d", code)
+	}
+	if code, _ := c.do("PUT", "/guard/users/555/password", admin, map[string]any{"password": "reset-password"}); code != http.StatusNoContent {
+		t.Fatalf("reset: %d", code)
+	}
+	if code, _ := c.do("GET", "/auth/me", userTok, nil); code != http.StatusUnauthorized {
+		t.Fatalf("session survived reset: %d", code)
+	}
+	if code, _ := c.do("POST", "/auth/login", "", map[string]any{"email": "host@example.com", "password": "reset-password"}); code != http.StatusOK {
+		t.Fatalf("login with reset password: %d", code)
 	}
 }

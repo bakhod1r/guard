@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bakhod1r/guard/apikey/domain"
+	"github.com/bakhod1r/guard/kernel/pgerr"
 )
 
 type Postgres struct{ db *pgxpool.Pool }
@@ -33,6 +34,9 @@ func scanKey(row pgx.Row) (*domain.Key, error) {
 func (p *Postgres) Create(ctx context.Context, k *domain.Key) error {
 	_, err := p.db.Exec(ctx, `INSERT INTO guard_api_key (id, user_id, name, prefix, hash, scopes, expires_at, created_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`, k.ID, k.UserID, k.Name, k.Prefix, k.Hash, k.Scopes, k.ExpiresAt, k.CreatedAt)
+	if pgerr.IsForeignKeyViolation(err) || pgerr.IsInvalidText(err) {
+		return domain.ErrOwnerNotFound
+	}
 	return err
 }
 
@@ -42,10 +46,13 @@ func (p *Postgres) ByHash(ctx context.Context, hash string) (*domain.Key, error)
 
 func (p *Postgres) ListByUser(ctx context.Context, userID string) ([]domain.Key, error) {
 	out := []domain.Key{}
-	if _, err := uuid.Parse(userID); err != nil {
+	if userID == "" {
 		return out, nil
 	}
 	rows, err := p.db.Query(ctx, `SELECT `+keyColumns+` FROM guard_api_key WHERE user_id=$1 ORDER BY created_at DESC`, userID)
+	if pgerr.IsInvalidText(err) {
+		return out, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -64,10 +71,13 @@ func (p *Postgres) Revoke(ctx context.Context, userID, id string, at time.Time) 
 	if _, err := uuid.Parse(id); err != nil {
 		return domain.ErrKeyNotFound
 	}
-	if _, err := uuid.Parse(userID); err != nil {
+	if userID == "" {
 		return domain.ErrKeyNotFound
 	}
 	tag, err := p.db.Exec(ctx, `UPDATE guard_api_key SET revoked_at=COALESCE(revoked_at,$3) WHERE id=$1 AND user_id=$2`, id, userID, at)
+	if pgerr.IsInvalidText(err) {
+		return domain.ErrKeyNotFound
+	}
 	if err == nil && tag.RowsAffected() == 0 {
 		return domain.ErrKeyNotFound
 	}
@@ -75,10 +85,13 @@ func (p *Postgres) Revoke(ctx context.Context, userID, id string, at time.Time) 
 }
 
 func (p *Postgres) RevokeAllByUser(ctx context.Context, userID string, at time.Time) error {
-	if _, err := uuid.Parse(userID); err != nil {
+	if userID == "" {
 		return nil
 	}
 	_, err := p.db.Exec(ctx, `UPDATE guard_api_key SET revoked_at=$2 WHERE user_id=$1 AND revoked_at IS NULL`, userID, at)
+	if pgerr.IsInvalidText(err) {
+		return nil
+	}
 	return err
 }
 

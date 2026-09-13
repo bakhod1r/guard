@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/google/uuid"
-
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -14,31 +12,48 @@ import (
 	"github.com/bakhod1r/guard/identity/domain"
 )
 
+const (
+	pgUniqueViolation     = "23505"
+	pgForeignKeyViolation = "23503"
+	pgInvalidTextRepr     = "22P02"
+	accountPKey           = "guard_account_pkey"
+)
+
+// PostgresUsers stores credentials in guard_account; the user row itself is host-owned.
 type PostgresUsers struct{ db *pgxpool.Pool }
 
 func NewPostgresUsers(db *pgxpool.Pool) *PostgresUsers { return &PostgresUsers{db: db} }
+
+func pgCode(err error) (*pgconn.PgError, bool) {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr, true
+	}
+	return nil, false
+}
 
 func (r *PostgresUsers) Create(ctx context.Context, u *domain.User) error {
 	attrs, err := json.Marshal(u.Attributes)
 	if err != nil {
 		return err
 	}
-	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `INSERT INTO guard_user (id, email, status, attributes, last_login_at, created_at, updated_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-			string(u.ID), string(u.Email), string(u.Status), attrs, u.LastLoginAt, u.CreatedAt, u.UpdatedAt)
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	_, err = r.db.Exec(ctx, `INSERT INTO guard_account
+		(user_id, email, secret, status, attributes, failed_attempts, last_failed_at, last_login_at, created_at, updated_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		string(u.ID), string(u.Email), u.PasswordHash, string(u.Status), attrs,
+		u.FailedAttempts, u.LastFailedAt, u.LastLoginAt, u.CreatedAt, u.UpdatedAt)
+	if pgErr, ok := pgCode(err); ok {
+		switch pgErr.Code {
+		case pgUniqueViolation:
+			if pgErr.ConstraintName == accountPKey {
+				return domain.ErrAccountExists
+			}
 			return domain.ErrEmailTaken
+		case pgForeignKeyViolation, pgInvalidTextRepr:
+			return domain.ErrUserNotFound
 		}
-		if err != nil {
-			return err
-		}
-		_, err = tx.Exec(ctx, `INSERT INTO guard_identity (user_id, kind, secret, failed_attempts, last_failed_at, created_at, updated_at)
-			VALUES ($1,'password',$2,$3,$4,$5,$6)`,
-			string(u.ID), u.PasswordHash, u.FailedAttempts, u.LastFailedAt, u.CreatedAt, u.UpdatedAt)
-		return err
-	})
+	}
+	return err
 }
 
 func (r *PostgresUsers) Update(ctx context.Context, u *domain.User) error {
@@ -46,39 +61,36 @@ func (r *PostgresUsers) Update(ctx context.Context, u *domain.User) error {
 	if err != nil {
 		return err
 	}
-	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `UPDATE guard_user SET email=$2, status=$3, attributes=$4, last_login_at=$5, updated_at=$6 WHERE id=$1`,
-			string(u.ID), string(u.Email), string(u.Status), attrs, u.LastLoginAt, u.UpdatedAt)
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+	tag, err := r.db.Exec(ctx, `UPDATE guard_account SET email=$2, secret=$3, status=$4, attributes=$5,
+		failed_attempts=$6, last_failed_at=$7, last_login_at=$8, updated_at=$9 WHERE user_id=$1`,
+		string(u.ID), string(u.Email), u.PasswordHash, string(u.Status), attrs,
+		u.FailedAttempts, u.LastFailedAt, u.LastLoginAt, u.UpdatedAt)
+	if pgErr, ok := pgCode(err); ok {
+		switch pgErr.Code {
+		case pgUniqueViolation:
 			return domain.ErrEmailTaken
-		}
-		if err != nil {
-			return err
-		}
-		if tag.RowsAffected() == 0 {
+		case pgInvalidTextRepr:
 			return domain.ErrUserNotFound
 		}
-		_, err = tx.Exec(ctx, `UPDATE guard_identity SET secret=$2, failed_attempts=$3, last_failed_at=$4, updated_at=$5
-			WHERE user_id=$1 AND kind='password'`,
-			string(u.ID), u.PasswordHash, u.FailedAttempts, u.LastFailedAt, u.UpdatedAt)
+	}
+	if err != nil {
 		return err
-	})
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrUserNotFound
+	}
+	return nil
 }
 
-const selectUser = `SELECT u.id::text, u.email, u.status, u.attributes, u.last_login_at, u.created_at, u.updated_at,
-	i.secret, i.failed_attempts, i.last_failed_at
-	FROM guard_user u JOIN guard_identity i ON i.user_id = u.id AND i.kind = 'password'`
+const selectAccount = `SELECT user_id::text, email, status, attributes, last_login_at, created_at, updated_at,
+	secret, failed_attempts, last_failed_at FROM guard_account`
 
 func (r *PostgresUsers) ByID(ctx context.Context, id domain.UserID) (*domain.User, error) {
-	if _, err := uuid.Parse(string(id)); err != nil {
-		return nil, domain.ErrUserNotFound
-	}
-	return r.one(ctx, selectUser+` WHERE u.id = $1`, string(id))
+	return r.one(ctx, selectAccount+` WHERE user_id = $1`, string(id))
 }
 
 func (r *PostgresUsers) ByEmail(ctx context.Context, email domain.Email) (*domain.User, error) {
-	return r.one(ctx, selectUser+` WHERE u.email = $1`, string(email))
+	return r.one(ctx, selectAccount+` WHERE email = $1`, string(email))
 }
 
 func (r *PostgresUsers) one(ctx context.Context, q string, arg any) (*domain.User, error) {
@@ -88,6 +100,9 @@ func (r *PostgresUsers) one(ctx context.Context, q string, arg any) (*domain.Use
 	err := r.db.QueryRow(ctx, q, arg).Scan(&id, &email, &status, &attrs, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
 		&u.PasswordHash, &u.FailedAttempts, &u.LastFailedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.ErrUserNotFound
+	}
+	if pgErr, ok := pgCode(err); ok && pgErr.Code == pgInvalidTextRepr {
 		return nil, domain.ErrUserNotFound
 	}
 	if err != nil {

@@ -16,13 +16,15 @@ import (
 // Mount registers every Guard route on r.
 //
 //	Self-service (AuthPath, default /auth):
-//	  POST   /register  POST /login       (rate limited per IP)
+//	  POST   /register  POST /login       (rate limited; /register only with Options.CreateUser)
 //	  GET    /me        POST /authorize   (session or API key)
 //	  POST   /logout    POST /logout-all  PUT /password           (session only)
 //	  GET    /sessions  DELETE /sessions/:id
 //	  GET    /api-keys  POST /api-keys    DELETE /api-keys/:id
 //	Management (AdminPath, default /guard), each guarded by a permission:
 //	  GET    /users/:id                       user.read (or self)
+//	  POST   /users/:id/account               user.write  (link existing host user)
+//	  PUT    /users/:id/password              user.write  (reset, signs out everywhere)
 //	  PUT    /users/:id/status                user.write
 //	  PUT    /users/:id/attributes            user.write
 //	  GET    /users/:id/roles                 role.read
@@ -50,7 +52,9 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	if o.AuthRateLimit.Limit > 0 {
 		limited = append(limited, RateLimit(g, "auth", o.AuthRateLimit, ByIP))
 	}
-	a.POST("/register", append(limited, h.register)...)
+	if o.CreateUser != nil {
+		a.POST("/register", append(limited, h.register)...)
+	}
 	a.POST("/login", append(limited, h.login)...)
 	a.GET("/me", RequireAuth(g, o), h.me)
 	a.POST("/authorize", RequireAuth(g, o), h.authorize)
@@ -66,6 +70,8 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 
 	m := r.Group(o.AdminPath)
 	m.GET("/users/:id", Require(g, o, "user", "read", ParamResource("id")), h.getUser)
+	m.POST("/users/:id/account", perm("user.write"), h.createAccount)
+	m.PUT("/users/:id/password", perm("user.write"), h.resetPassword)
 	m.PUT("/users/:id/status", Require(g, o, "user", "write", ParamResource("id")), h.setStatus)
 	m.PUT("/users/:id/attributes", Require(g, o, "user", "write", ParamResource("id")), h.setAttributes)
 	m.GET("/users/:id/roles", Require(g, o, "role", "read", userOwned), h.userRoles)
@@ -161,7 +167,13 @@ func (h *handlers) register(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
-	u, err := h.g.Register(c.Request.Context(), in.Email, in.Password, nil, meta(c))
+	ctx := c.Request.Context()
+	userID, err := h.o.CreateUser(ctx, in.Email)
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	u, err := h.g.CreateAccount(ctx, userID, in.Email, in.Password, nil, meta(c))
 	if err != nil {
 		fail(c, err)
 		return
@@ -358,6 +370,37 @@ func (h *handlers) revokeUserAPIKeys(c *gin.Context) {
 }
 
 // ---------- users ----------
+
+func (h *handlers) createAccount(c *gin.Context) {
+	var in struct {
+		Email      string         `json:"email" binding:"required"`
+		Password   string         `json:"password" binding:"required"`
+		Attributes map[string]any `json:"attributes"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	u, err := h.g.CreateAccount(c.Request.Context(), c.Param("id"), in.Email, in.Password, in.Attributes, meta(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusCreated, toUser(u))
+}
+
+func (h *handlers) resetPassword(c *gin.Context) {
+	var in struct {
+		Password string `json:"password" binding:"required"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	if err := h.g.ResetPassword(c.Request.Context(), string(PrincipalFrom(c).User.ID), c.Param("id"), in.Password); err != nil {
+		fail(c, err)
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
 
 func (h *handlers) getUser(c *gin.Context) {
 	u, err := h.g.Identity.User(c.Request.Context(), identitydomain.UserID(c.Param("id")))

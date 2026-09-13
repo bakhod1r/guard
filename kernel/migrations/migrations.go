@@ -1,12 +1,17 @@
 // Package migrations ships Guard's PostgreSQL schema as goose migrations.
 //
+// Guard does not own a users table: the migrations are text/templates rendered
+// against the host application's existing user table.
+//
 // Typical flow in a host application:
 //
-//	migrations.Write("./migrations/guard")          // copy SQL into the project
-//	migrations.Up(ctx, pool, "./migrations/guard")  // apply it
+//	ref, _ := migrations.Detect(ctx, pool, "users", "id") // inspect the host table
+//	migrations.Write("./migrations/guard", ref)           // render SQL into the project
+//	migrations.Up(ctx, pool, "./migrations/guard", ref)   // apply it
 package migrations
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"embed"
@@ -15,7 +20,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
+	"testing/fstest"
+	"text/template"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
@@ -24,25 +34,174 @@ import (
 // VersionTable tracks applied Guard migrations separately from the host's goose table.
 const VersionTable = "guard_schema_version"
 
-//go:embed sql/*.sql
+const tmplExt = ".tmpl"
+
+//go:embed sql/*.sql.tmpl
 var embedded embed.FS
 
-// FS returns the embedded migration files.
-func FS() fs.FS {
-	sub, err := fs.Sub(embedded, "sql")
-	if err != nil {
-		panic(err)
-	}
-	return sub
+// UserRef points Guard at the host application's user table.
+type UserRef struct {
+	Table    string // as given, e.g. "users" or "auth.users"
+	IDColumn string // e.g. "id"
+	IDType   string // from format_type(), e.g. "bigint"
 }
 
-// Write copies the migration files into dir. Existing files are left untouched
+// idTypePattern is an injection guard: IDType is spliced into DDL verbatim.
+var idTypePattern = regexp.MustCompile(`^[a-z0-9 _(),."]+$`)
+
+// Validate reports whether ref is safe to render.
+func (r UserRef) Validate() error {
+	switch {
+	case strings.TrimSpace(r.Table) == "":
+		return errors.New("guard migrations: user table is empty")
+	case strings.TrimSpace(r.IDColumn) == "":
+		return errors.New("guard migrations: user id column is empty")
+	case strings.TrimSpace(r.IDType) == "":
+		return errors.New("guard migrations: user id type is empty")
+	case !idTypePattern.MatchString(r.IDType):
+		return fmt.Errorf("guard migrations: user id type %q contains disallowed characters", r.IDType)
+	}
+	if schema, table, ok := strings.Cut(r.Table, "."); ok && (schema == "" || table == "") {
+		return fmt.Errorf("guard migrations: user table %q is malformed", r.Table)
+	}
+	return nil
+}
+
+func (r UserRef) tableIdent() string {
+	if schema, table, ok := strings.Cut(r.Table, "."); ok {
+		return pgx.Identifier{schema, table}.Sanitize()
+	}
+	return pgx.Identifier{r.Table}.Sanitize()
+}
+
+// Detect inspects the host user table and returns a UserRef for it. table may be
+// schema-qualified ("auth.users"); unqualified names follow search_path.
+// column defaults to "id". The column must be a PRIMARY KEY or carry a
+// single-column UNIQUE constraint/index, and must not be an array.
+func Detect(ctx context.Context, pool *pgxpool.Pool, table, column string) (UserRef, error) {
+	if column == "" {
+		column = "id"
+	}
+	if strings.TrimSpace(table) == "" {
+		return UserRef{}, errors.New("guard migrations: detect: user table is empty")
+	}
+	var schemaQualified = strings.Contains(table, ".")
+	var qualified string
+	if schema, tbl, ok := strings.Cut(table, "."); ok {
+		qualified = pgx.Identifier{schema, tbl}.Sanitize()
+	} else {
+		qualified = pgx.Identifier{table}.Sanitize()
+	}
+
+	var (
+		oid              *uint32
+		nspname, relname string
+	)
+	err := pool.QueryRow(ctx, `
+		SELECT c.oid, n.nspname, c.relname
+		FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE c.oid = to_regclass($1) AND c.relkind IN ('r', 'p')`, qualified).Scan(&oid, &nspname, &relname)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UserRef{}, fmt.Errorf("guard migrations: detect: user table %q not found", table)
+	}
+	if err != nil {
+		return UserRef{}, fmt.Errorf("guard migrations: detect table %q: %w", table, err)
+	}
+
+	var (
+		attnum   int16
+		typ      string
+		isArray  bool
+		isUnique bool
+	)
+	err = pool.QueryRow(ctx, `
+		SELECT a.attnum,
+		       format_type(a.atttypid, a.atttypmod),
+		       (a.attndims > 0 OR t.typcategory = 'A'),
+		       EXISTS (
+		           SELECT 1 FROM pg_index i
+		           WHERE i.indrelid = a.attrelid
+		             AND i.indisunique
+		             AND i.indnkeyatts = 1
+		             AND i.indkey[0] = a.attnum
+		             AND i.indpred IS NULL
+		             AND i.indexprs IS NULL)
+		FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid
+		WHERE a.attrelid = $1 AND a.attname = $2 AND a.attnum > 0 AND NOT a.attisdropped`,
+		*oid, column).Scan(&attnum, &typ, &isArray, &isUnique)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return UserRef{}, fmt.Errorf("guard migrations: detect: column %q not found in %s.%s", column, nspname, relname)
+	}
+	if err != nil {
+		return UserRef{}, fmt.Errorf("guard migrations: detect column %q: %w", column, err)
+	}
+	if isArray {
+		return UserRef{}, fmt.Errorf("guard migrations: detect: column %s.%s.%s has array type %s; foreign keys need a scalar id", nspname, relname, column, typ)
+	}
+	if !isUnique {
+		return UserRef{}, fmt.Errorf("guard migrations: detect: column %s.%s.%s is not a PRIMARY KEY and has no single-column UNIQUE constraint or index; foreign keys require one", nspname, relname, column)
+	}
+
+	// Canonical catalog names so rendered (quoted) identifiers match what
+	// to_regclass resolved, e.g. unquoted "Users" -> "users".
+	name := relname
+	if schemaQualified {
+		name = nspname + "." + relname
+	}
+	ref := UserRef{Table: name, IDColumn: column, IDType: typ}
+	if err := ref.Validate(); err != nil {
+		return UserRef{}, fmt.Errorf("guard migrations: detect: %w", err)
+	}
+	return ref, nil
+}
+
+// Render executes the embedded templates with ref and returns the *.sql files.
+func Render(ref UserRef) (fs.FS, error) {
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
+	data := struct{ UserTable, UserIDColumn, UserIDType string }{
+		UserTable:    ref.tableIdent(),
+		UserIDColumn: pgx.Identifier{ref.IDColumn}.Sanitize(),
+		UserIDType:   ref.IDType,
+	}
+	entries, err := fs.ReadDir(embedded, "sql")
+	if err != nil {
+		return nil, err
+	}
+	out := fstest.MapFS{}
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), tmplExt) {
+			continue
+		}
+		b, err := fs.ReadFile(embedded, "sql/"+e.Name())
+		if err != nil {
+			return nil, err
+		}
+		t, err := template.New(e.Name()).Option("missingkey=error").Parse(string(b))
+		if err != nil {
+			return nil, fmt.Errorf("guard migrations: parse %s: %w", e.Name(), err)
+		}
+		var buf bytes.Buffer
+		if err := t.Execute(&buf, data); err != nil {
+			return nil, fmt.Errorf("guard migrations: render %s: %w", e.Name(), err)
+		}
+		out[strings.TrimSuffix(e.Name(), tmplExt)] = &fstest.MapFile{Data: buf.Bytes(), Mode: 0o644}
+	}
+	return out, nil
+}
+
+// Write renders the migrations into dir. Existing files are left untouched
 // so local edits survive; the returned slice lists files actually written.
-func Write(dir string) ([]string, error) {
+func Write(dir string, ref UserRef) ([]string, error) {
+	fsys, err := Render(ref)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	entries, err := fs.ReadDir(FS(), ".")
+	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +213,7 @@ func Write(dir string) ([]string, error) {
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return written, err
 		}
-		b, err := fs.ReadFile(FS(), e.Name())
+		b, err := fs.ReadFile(fsys, e.Name())
 		if err != nil {
 			return written, err
 		}
@@ -66,10 +225,10 @@ func Write(dir string) ([]string, error) {
 	return written, nil
 }
 
-// Up applies pending migrations. dir == "" uses the embedded files;
-// otherwise the files in dir are applied (see Write).
-func Up(ctx context.Context, pool *pgxpool.Pool, dir string) error {
-	p, db, err := provider(pool, dir)
+// Up applies pending migrations. dir == "" renders the embedded templates with
+// ref; otherwise the files in dir are applied and ref is ignored.
+func Up(ctx context.Context, pool *pgxpool.Pool, dir string, ref UserRef) error {
+	p, db, err := provider(pool, dir, ref)
 	if err != nil {
 		return err
 	}
@@ -80,9 +239,10 @@ func Up(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	return nil
 }
 
-// Down rolls back every Guard migration. Destroys all Guard data.
-func Down(ctx context.Context, pool *pgxpool.Pool, dir string) error {
-	p, db, err := provider(pool, dir)
+// Down rolls back every Guard migration. Destroys all Guard data; the host
+// user table is never touched.
+func Down(ctx context.Context, pool *pgxpool.Pool, dir string, ref UserRef) error {
+	p, db, err := provider(pool, dir, ref)
 	if err != nil {
 		return err
 	}
@@ -93,10 +253,15 @@ func Down(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 	return nil
 }
 
-func provider(pool *pgxpool.Pool, dir string) (*goose.Provider, *sql.DB, error) {
-	fsys := FS()
+func provider(pool *pgxpool.Pool, dir string, ref UserRef) (*goose.Provider, *sql.DB, error) {
+	var fsys fs.FS
 	if dir != "" {
 		fsys = os.DirFS(dir)
+	} else {
+		var err error
+		if fsys, err = Render(ref); err != nil {
+			return nil, nil, err
+		}
 	}
 	db := stdlib.OpenDBFromPool(pool)
 	p, err := goose.NewProvider(goose.DialectPostgres, db, fsys,

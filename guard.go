@@ -1,7 +1,7 @@
 // Package guard wires identity, sessions, RBAC/ABAC and audit into one entry point.
 //
-//	g, _ := guard.New(guard.Config{DB: pool, Redis: rdb})
-//	_ = guard.WriteMigrations("./migrations/guard")
+//	g, _ := guard.New(guard.Config{DB: pool, Redis: rdb, UserTable: "users", UserIDColumn: "id"})
+//	_, _ = g.WriteMigrations(ctx, "./migrations/guard") // detects users.id type, renders SQL
 //	_ = g.Migrate(ctx, "./migrations/guard")
 //	ginguard.Mount(router.Group("/api"), g, ginguard.Options{})
 package guard
@@ -61,8 +61,13 @@ type Config struct {
 	Session SessionPolicy
 	// Lockout for password guessing. Zero value uses 5 attempts / 15m.
 	Lockout Lockout
-	// DefaultRole is assigned on Register. Default "user"; "-" disables.
+	// DefaultRole is assigned on CreateAccount. Default "user"; "-" disables.
 	DefaultRole string
+	// UserTable is the host application's existing user table ("users" or
+	// "schema.users"). Guard never creates it; its tables reference it. Default "users".
+	UserTable string
+	// UserIDColumn is the primary key (or unique) column of UserTable. Default "id".
+	UserIDColumn string
 }
 
 type Guard struct {
@@ -76,6 +81,8 @@ type Guard struct {
 
 	db          *pgxpool.Pool
 	defaultRole string
+	userTable   string
+	userColumn  string
 }
 
 func New(cfg Config) (*Guard, error) {
@@ -122,7 +129,15 @@ func Build(r Repositories, cfg Config) *Guard {
 	case "-":
 		cfg.DefaultRole = ""
 	}
+	if cfg.UserTable == "" {
+		cfg.UserTable = "users"
+	}
+	if cfg.UserIDColumn == "" {
+		cfg.UserIDColumn = "id"
+	}
 	return &Guard{
+		userTable:   cfg.UserTable,
+		userColumn:  cfg.UserIDColumn,
 		Identity:    identityapp.NewService(r.Users, r.Hasher, cfg.Lockout),
 		Sessions:    sessionapp.NewService(r.Sessions, cfg.Session),
 		Access:      accessapp.NewService(r.Roles, r.Policies),
@@ -133,15 +148,32 @@ func Build(r Repositories, cfg Config) *Guard {
 	}
 }
 
-// WriteMigrations copies Guard's SQL migrations into dir without overwriting existing files.
-func WriteMigrations(dir string) ([]string, error) { return migrations.Write(dir) }
-
-// Migrate applies migrations from dir ("" = embedded copies).
-func (g *Guard) Migrate(ctx context.Context, dir string) error {
+// UserRef inspects the database and resolves the host user table and its id column type.
+func (g *Guard) UserRef(ctx context.Context) (migrations.UserRef, error) {
 	if g.db == nil {
-		return errors.New("guard: Migrate needs a PostgreSQL-backed Guard")
+		return migrations.UserRef{}, errors.New("guard: needs a PostgreSQL-backed Guard")
 	}
-	return migrations.Up(ctx, g.db, dir)
+	return migrations.Detect(ctx, g.db, g.userTable, g.userColumn)
+}
+
+// WriteMigrations detects the host user table, renders Guard's SQL migrations
+// for it and writes them into dir. Existing files are never overwritten.
+func (g *Guard) WriteMigrations(ctx context.Context, dir string) ([]string, error) {
+	ref, err := g.UserRef(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return migrations.Write(dir, ref)
+}
+
+// Migrate applies migrations from dir. dir == "" renders the embedded
+// templates against the detected user table instead.
+func (g *Guard) Migrate(ctx context.Context, dir string) error {
+	ref, err := g.UserRef(ctx)
+	if err != nil {
+		return err
+	}
+	return migrations.Up(ctx, g.db, dir, ref)
 }
 
 // RequestMeta describes the HTTP caller for sessions and audit.
@@ -156,8 +188,10 @@ func (g *Guard) record(ctx context.Context, e audit.Event) {
 	}
 }
 
-func (g *Guard) Register(ctx context.Context, email, password string, attrs map[string]any, meta RequestMeta) (*User, error) {
-	u, err := g.Identity.Register(ctx, identityapp.RegisterInput{Email: email, Password: password, Attributes: attrs})
+// CreateAccount gives an existing host user (userID from UserTable) login
+// credentials, assigns DefaultRole and records an audit event.
+func (g *Guard) CreateAccount(ctx context.Context, userID, email, password string, attrs map[string]any, meta RequestMeta) (*User, error) {
+	u, err := g.Identity.CreateAccount(ctx, identityapp.CreateAccountInput{UserID: userID, Email: email, Password: password, Attributes: attrs})
 	if err != nil {
 		return nil, err
 	}
@@ -166,8 +200,20 @@ func (g *Guard) Register(ctx context.Context, email, password string, attrs map[
 			return nil, err
 		}
 	}
-	g.record(ctx, audit.Event{ActorID: string(u.ID), Action: "user.register", Target: string(u.ID), Success: true, IP: meta.IP, UserAgent: meta.UserAgent})
+	g.record(ctx, audit.Event{ActorID: string(u.ID), Action: "account.create", Target: string(u.ID), Success: true, IP: meta.IP, UserAgent: meta.UserAgent})
 	return u, nil
+}
+
+// ResetPassword sets a new password (admin action) and signs the user out everywhere.
+func (g *Guard) ResetPassword(ctx context.Context, actorID, userID, password string) error {
+	if err := g.Identity.SetPassword(ctx, identitydomain.UserID(userID), password); err != nil {
+		return err
+	}
+	if err := g.Sessions.RevokeAll(ctx, userID); err != nil {
+		return err
+	}
+	g.record(ctx, audit.Event{ActorID: actorID, Action: "account.password_reset", Target: userID, Success: true})
+	return nil
 }
 
 type LoginResult struct {
@@ -304,12 +350,12 @@ func (g *Guard) IssueAPIKey(ctx context.Context, p *Principal, name string, scop
 	return k, tok, nil
 }
 
-// EnsureAdmin creates the account if missing and grants it the admin role.
-// Intended for bootstrap at startup from environment configuration.
-func (g *Guard) EnsureAdmin(ctx context.Context, email, password string) (*User, error) {
-	u, err := g.Identity.Register(ctx, identityapp.RegisterInput{Email: email, Password: password})
-	if errors.Is(err, identitydomain.ErrEmailTaken) {
-		u, err = g.Identity.UserByEmail(ctx, email)
+// EnsureAdmin gives the existing host user userID an account (if missing)
+// and the admin role. Intended for bootstrap at startup.
+func (g *Guard) EnsureAdmin(ctx context.Context, userID, email, password string) (*User, error) {
+	u, err := g.Identity.CreateAccount(ctx, identityapp.CreateAccountInput{UserID: userID, Email: email, Password: password})
+	if errors.Is(err, identitydomain.ErrAccountExists) {
+		u, err = g.Identity.User(ctx, identitydomain.UserID(userID))
 	}
 	if err != nil {
 		return nil, err

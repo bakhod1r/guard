@@ -34,14 +34,33 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: addr})
 	defer rdb.Close()
 
-	dir := filepath.Join(t.TempDir(), "migrations", "guard")
-	if _, err := guard.WriteMigrations(dir); err != nil {
+	// The host application owns its user table; Guard only references it.
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS guard_schema_version, guard_audit_event, guard_api_key, guard_policy_condition,
+		guard_policy_condition_group, guard_policy, guard_user_role, guard_role_permission, guard_permission, guard_role, guard_account, app_users CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	_ = migrations.Down(ctx, pool, dir)
-	g, err := guard.New(guard.Config{DB: pool, Redis: rdb, RedisPrefix: "guard-it:"})
+	if _, err := pool.Exec(ctx, `CREATE TABLE app_users (id BIGSERIAL PRIMARY KEY, full_name TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	hostUser := func(name string) string {
+		var id string
+		if err := pool.QueryRow(ctx, `INSERT INTO app_users (full_name) VALUES ($1) RETURNING id::text`, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+
+	g, err := guard.New(guard.Config{DB: pool, Redis: rdb, RedisPrefix: "guard-it:", UserTable: "app_users"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	ref, err := g.UserRef(ctx)
+	if err != nil || ref.IDType != "bigint" {
+		t.Fatalf("detect: %+v %v", ref, err)
+	}
+	dir := filepath.Join(t.TempDir(), "migrations", "guard")
+	if files, err := g.WriteMigrations(ctx, dir); err != nil || len(files) != 3 {
+		t.Fatalf("write migrations: %v %v", files, err)
 	}
 	if err := g.Migrate(ctx, dir); err != nil {
 		t.Fatal(err)
@@ -50,14 +69,31 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 		t.Fatalf("second migrate must be a no-op: %v", err)
 	}
 
-	admin, err := g.EnsureAdmin(ctx, "root@example.com", "root-password")
+	var typ string
+	if err := pool.QueryRow(ctx, `SELECT data_type FROM information_schema.columns WHERE table_name='guard_account' AND column_name='user_id'`).Scan(&typ); err != nil || typ != "bigint" {
+		t.Fatalf("guard_account.user_id type: %q %v", typ, err)
+	}
+	var guardUsers int
+	_ = pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables WHERE table_name IN ('guard_user','guard_identity')`).Scan(&guardUsers)
+	if guardUsers != 0 {
+		t.Fatal("guard must not create its own user tables")
+	}
+
+	rootID := hostUser("Root")
+	admin, err := g.EnsureAdmin(ctx, rootID, "root@example.com", "root-password")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.EnsureAdmin(ctx, "root@example.com", "root-password"); err != nil {
+	if _, err := g.EnsureAdmin(ctx, rootID, "root@example.com", "root-password"); err != nil {
 		t.Fatalf("EnsureAdmin not idempotent: %v", err)
 	}
-	u, err := g.Register(ctx, "user@example.com", "password123", map[string]any{"department": "sales"}, guard.RequestMeta{IP: "127.0.0.1"})
+	if _, err := g.CreateAccount(ctx, "999999", "ghost@example.com", "password123", nil, guard.RequestMeta{}); err == nil {
+		t.Fatal("account for missing host user accepted")
+	}
+	if _, err := g.CreateAccount(ctx, "not-a-number", "ghost@example.com", "password123", nil, guard.RequestMeta{}); err == nil {
+		t.Fatal("account for invalid host id accepted")
+	}
+	u, err := g.CreateAccount(ctx, hostUser("Ali"), "user@example.com", "password123", map[string]any{"department": "sales"}, guard.RequestMeta{IP: "127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +197,19 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 		t.Fatalf("audit: %d %v", len(events), err)
 	}
 
-	if err := migrations.Down(ctx, pool, dir); err != nil {
+	// Host user deletion cascades into Guard.
+	if _, err := pool.Exec(ctx, `DELETE FROM app_users WHERE id=$1`, string(u.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Identity.User(ctx, u.ID); err == nil {
+		t.Fatal("account survived host user deletion")
+	}
+
+	if err := migrations.Down(ctx, pool, dir, ref); err != nil {
 		t.Fatalf("down: %v", err)
+	}
+	var hostRows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM app_users`).Scan(&hostRows); err != nil || hostRows != 1 {
+		t.Fatalf("host table touched by down: %d %v", hostRows, err)
 	}
 }

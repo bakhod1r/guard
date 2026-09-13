@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/bakhod1r/guard/kernel/pgerr"
 )
 
 type Event struct {
@@ -46,13 +48,29 @@ func NewPostgres(db *pgxpool.Pool) *Postgres { return &Postgres{db: db} }
 
 func (p *Postgres) Record(ctx context.Context, e Event) error {
 	prepare(&e)
+	var actor any
+	if e.ActorID != "" {
+		actor = e.ActorID
+	}
+	err := p.insert(ctx, e, actor)
+	if actor != nil && pgerr.IsInvalidText(err) {
+		// The actor id does not fit the host id type (e.g. "abc" for bigint). Keep the
+		// event: store actor_id NULL and preserve the raw value in metadata.
+		meta := make(map[string]any, len(e.Metadata)+1)
+		for k, v := range e.Metadata {
+			meta[k] = v
+		}
+		meta["actor_id"] = e.ActorID
+		e.Metadata = meta
+		err = p.insert(ctx, e, nil)
+	}
+	return err
+}
+
+func (p *Postgres) insert(ctx context.Context, e Event, actor any) error {
 	meta, err := json.Marshal(e.Metadata)
 	if err != nil {
 		return err
-	}
-	var actor any
-	if _, err := uuid.Parse(e.ActorID); err == nil {
-		actor = e.ActorID
 	}
 	_, err = p.db.Exec(ctx, `INSERT INTO guard_audit_event (id, occurred_at, actor_id, action, target, success, ip, user_agent, metadata)
 		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,NULLIF($7,''),NULLIF($8,''),$9)`,
@@ -68,13 +86,13 @@ func (p *Postgres) List(ctx context.Context, actorID string, limit int) ([]Event
 		COALESCE(ip,''), COALESCE(user_agent,''), metadata FROM guard_audit_event`
 	args := []any{limit}
 	if actorID != "" {
-		if _, err := uuid.Parse(actorID); err != nil {
-			return []Event{}, nil
-		}
 		q += ` WHERE actor_id = $2`
 		args = append(args, actorID)
 	}
 	rows, err := p.db.Query(ctx, q+` ORDER BY occurred_at DESC LIMIT $1`, args...)
+	if pgerr.IsInvalidText(err) {
+		return []Event{}, nil
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -18,6 +18,9 @@ func NewMemoryUsers() *MemoryUsers { return &MemoryUsers{byID: map[domain.UserID
 func (m *MemoryUsers) Create(_ context.Context, u *domain.User) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, ok := m.byID[u.ID]; ok {
+		return domain.ErrAccountExists
+	}
 	for _, x := range m.byID {
 		if x.Email == u.Email {
 			return domain.ErrEmailTaken
