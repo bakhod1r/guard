@@ -1,0 +1,50 @@
+{{define "content"}}
+{{$d := .Data}}
+<div class="bar"><h1>Users</h1><span class="mute">{{$d.Total}} accounts</span></div>
+<form method="get" action="{{.Base}}/users" class="card row">
+  <div><label for="q">Search (email or exact user ID)</label><input id="q" name="q" value="{{$d.Search}}"></div>
+  <div><label for="status">Status</label>
+    <select id="status" name="status"><option value="">Any</option>
+    {{range $d.Statuses}}<option value="{{.}}"{{if eq (print .) $d.Status}} selected{{end}}>{{.}}</option>{{end}}
+    </select></div>
+  <button class="btn primary">Filter</button>
+</form>
+{{if not $d.Users}}
+<div class="card empty">No accounts match this filter.</div>
+{{else}}
+<div class="card scroll">
+<table>
+  <thead><tr><th scope="col">Email</th><th scope="col">User ID</th><th scope="col">Status</th><th scope="col">Last login</th><th scope="col">Created</th></tr></thead>
+  <tbody>
+  {{range $d.Users}}
+  <tr class="user-row">
+    <td><a href="{{$.Base}}/users/{{.ID}}">{{.Email}}</a></td>
+    <td class="mono" title="{{.ID}}">{{short (print .ID)}}</td>
+    <td>{{if eq (print .Status) "active"}}<span class="badge ok">{{.Status}}</span>{{else if eq (print .Status) "pending"}}<span class="badge">{{.Status}}</span>{{else}}<span class="badge bad">{{.Status}}</span>{{end}}</td>
+    <td>{{time .LastLoginAt}}</td>
+    <td>{{time .CreatedAt}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+<div class="row" style="justify-content:space-between">
+  {{if $d.PrevPage}}<a class="btn sm" href="?q={{$d.Search}}&amp;status={{$d.Status}}&amp;page={{$d.PrevPage}}">Previous</a>{{end}}
+  <span class="mute">Page {{$d.Page}}</span>
+  {{if $d.NextPage}}<a class="btn sm" href="?q={{$d.Search}}&amp;status={{$d.Status}}&amp;page={{$d.NextPage}}">Next</a>{{end}}
+</div>
+{{if $d.CanWrite}}
+<form method="post" action="{{.Base}}/users/new" class="card">
+  <h2>Link host user</h2>
+  <p class="mute">Give an existing row of the host user table login credentials.</p>
+  <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+  <div class="row">
+    <div><label for="user_id">Host user ID</label><input id="user_id" name="user_id" required></div>
+    <div><label for="email">Email</label><input id="email" name="email" type="email" required></div>
+    <div><label for="password">Password (8-128)</label><input id="password" name="password" type="password" minlength="8" maxlength="128" required autocomplete="new-password"></div>
+    <button class="btn primary">Create account</button>
+  </div>
+</form>
+{{end}}
+{{end}}

@@ -159,3 +159,45 @@ func TestSetPasswordResetsLockout(t *testing.T) {
 		t.Fatalf("missing: %v", err)
 	}
 }
+
+// listSpy records the query the service passes to the repository.
+type listSpy struct {
+	domain.UserRepository
+	got domain.ListQuery
+}
+
+func (l *listSpy) List(_ context.Context, q domain.ListQuery) ([]domain.User, int, error) {
+	l.got = q
+	return nil, 0, nil
+}
+
+func TestListUsersClampsPaging(t *testing.T) {
+	cases := []struct {
+		in, want domain.ListQuery
+	}{
+		{domain.ListQuery{}, domain.ListQuery{Limit: 25}},
+		{domain.ListQuery{Limit: -3, Offset: -1}, domain.ListQuery{Limit: 25}},
+		{domain.ListQuery{Limit: 500, Offset: 10}, domain.ListQuery{Limit: 100, Offset: 10}},
+		{domain.ListQuery{Limit: 7, Search: " a ", Status: domain.StatusBanned}, domain.ListQuery{Limit: 7, Search: "a", Status: domain.StatusBanned}},
+	}
+	for _, tc := range cases {
+		spy := &listSpy{}
+		s := NewService(spy, nil, domain.Lockout{})
+		if _, _, err := s.ListUsers(context.Background(), tc.in); err != nil {
+			t.Fatal(err)
+		}
+		if spy.got != tc.want {
+			t.Fatalf("in %+v: got %+v want %+v", tc.in, spy.got, tc.want)
+		}
+	}
+}
+
+func TestListUsersMemory(t *testing.T) {
+	s := newService(t)
+	mustAccount(t, s, "1", "a@b.uz")
+	mustAccount(t, s, "2", "c@d.uz")
+	users, total, err := s.ListUsers(context.Background(), domain.ListQuery{Search: "A@B"})
+	if err != nil || total != 1 || len(users) != 1 || users[0].ID != "1" {
+		t.Fatalf("list: %+v %d %v", users, total, err)
+	}
+}

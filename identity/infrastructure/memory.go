@@ -2,6 +2,8 @@ package infrastructure
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 
 	"github.com/bakhod1r/guard/identity/domain"
@@ -59,4 +61,30 @@ func (m *MemoryUsers) ByEmail(_ context.Context, email domain.Email) (*domain.Us
 		}
 	}
 	return nil, domain.ErrUserNotFound
+}
+
+func (m *MemoryUsers) List(_ context.Context, q domain.ListQuery) ([]domain.User, int, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	needle := strings.ToLower(q.Search)
+	out := []domain.User{}
+	for _, u := range m.byID {
+		if q.Search != "" && !strings.Contains(strings.ToLower(string(u.Email)), needle) && string(u.ID) != q.Search {
+			continue
+		}
+		if q.Status != "" && u.Status != q.Status {
+			continue
+		}
+		out = append(out, u)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	total := len(out)
+	start := min(q.Offset, total)
+	end := min(start+q.Limit, total)
+	return out[start:end], total, nil
 }

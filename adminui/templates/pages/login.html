@@ -1,0 +1,11 @@
+{{define "content"}}
+<div class="card">
+  <h1>Sign in to Guard</h1>
+  <form method="post" action="{{.Base}}/login">
+    <input type="hidden" name="next" value="{{.Data.Next}}">
+    <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required autofocus></div>
+    <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+</div>
+{{end}}

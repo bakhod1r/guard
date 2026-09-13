@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -94,18 +95,22 @@ func (r *PostgresUsers) ByEmail(ctx context.Context, email domain.Email) (*domai
 }
 
 func (r *PostgresUsers) one(ctx context.Context, q string, arg any) (*domain.User, error) {
-	var u domain.User
-	var id, email, status string
-	var attrs []byte
-	err := r.db.QueryRow(ctx, q, arg).Scan(&id, &email, &status, &attrs, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
-		&u.PasswordHash, &u.FailedAttempts, &u.LastFailedAt)
+	u, err := scanAccount(r.db.QueryRow(ctx, q, arg))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrUserNotFound
 	}
 	if pgErr, ok := pgCode(err); ok && pgErr.Code == pgInvalidTextRepr {
 		return nil, domain.ErrUserNotFound
 	}
-	if err != nil {
+	return u, err
+}
+
+func scanAccount(row pgx.Row) (*domain.User, error) {
+	var u domain.User
+	var id, email, status string
+	var attrs []byte
+	if err := row.Scan(&id, &email, &status, &attrs, &u.LastLoginAt, &u.CreatedAt, &u.UpdatedAt,
+		&u.PasswordHash, &u.FailedAttempts, &u.LastFailedAt); err != nil {
 		return nil, err
 	}
 	u.ID, u.Email, u.Status = domain.UserID(id), domain.Email(email), domain.Status(status)
@@ -113,4 +118,35 @@ func (r *PostgresUsers) one(ctx context.Context, q string, arg any) (*domain.Use
 		return nil, err
 	}
 	return &u, nil
+}
+
+// escapeLike makes s a literal for ILIKE ... ESCAPE '\'.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+const listWhere = ` WHERE ($1 = '' OR email ILIKE '%' || $2 || '%' ESCAPE '\' OR user_id::text = $1)
+	AND ($3 = '' OR status = $3)`
+
+func (r *PostgresUsers) List(ctx context.Context, q domain.ListQuery) ([]domain.User, int, error) {
+	args := []any{q.Search, escapeLike(q.Search), string(q.Status)}
+	var total int
+	if err := r.db.QueryRow(ctx, `SELECT count(*) FROM guard_account`+listWhere, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := r.db.Query(ctx, selectAccount+listWhere+` ORDER BY created_at DESC, user_id::text LIMIT $4 OFFSET $5`,
+		append(args, q.Limit, q.Offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []domain.User{}
+	for rows.Next() {
+		u, err := scanAccount(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, *u)
+	}
+	return out, total, rows.Err()
 }

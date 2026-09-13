@@ -178,3 +178,23 @@ func (s *Service) SetAttributes(ctx context.Context, id domain.UserID, attrs map
 	u.UpdatedAt = s.now().UTC()
 	return s.users.Update(ctx, u)
 }
+
+const (
+	DefaultListLimit = 25
+	MaxListLimit     = 100
+)
+
+// ListUsers returns a page of accounts; Limit is clamped to 1..100 (default 25).
+func (s *Service) ListUsers(ctx context.Context, q domain.ListQuery) ([]domain.User, int, error) {
+	q.Search = strings.TrimSpace(q.Search)
+	if q.Limit <= 0 {
+		q.Limit = DefaultListLimit
+	}
+	if q.Limit > MaxListLimit {
+		q.Limit = MaxListLimit
+	}
+	if q.Offset < 0 {
+		q.Offset = 0
+	}
+	return s.users.List(ctx, q)
+}

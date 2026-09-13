@@ -124,6 +124,17 @@ type UserRepository interface {
 	ByID(ctx context.Context, id UserID) (*User, error)
 	ByEmail(ctx context.Context, email Email) (*User, error)
 	Update(ctx context.Context, u *User) error
+	// List returns one page of accounts matching q plus the total match count.
+	List(ctx context.Context, q ListQuery) ([]User, int, error)
+}
+
+// ListQuery filters account listings. Search matches an email substring
+// (case-insensitive) or an exact user id; empty Status matches all.
+type ListQuery struct {
+	Search string
+	Status Status
+	Limit  int
+	Offset int
 }
 
 type PasswordHasher interface {
