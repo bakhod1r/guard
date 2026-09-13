@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/bakhod1r/guard/kernel/pgerr"
@@ -90,24 +91,21 @@ func (p *Postgres) List(ctx context.Context, actorID string, limit int) ([]Event
 		args = append(args, actorID)
 	}
 	rows, err := p.db.Query(ctx, q+` ORDER BY occurred_at DESC LIMIT $1`, args...)
-	if pgerr.IsInvalidText(err) {
-		return []Event{}, nil
-	}
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Event{}
-	for rows.Next() {
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Event, error) {
 		var e Event
 		var meta []byte
-		if err := rows.Scan(&e.ID, &e.OccurredAt, &e.ActorID, &e.Action, &e.Target, &e.Success, &e.IP, &e.UserAgent, &meta); err != nil {
-			return nil, err
-		}
+		err := r.Scan(&e.ID, &e.OccurredAt, &e.ActorID, &e.Action, &e.Target, &e.Success, &e.IP, &e.UserAgent, &meta)
 		_ = json.Unmarshal(meta, &e.Metadata)
-		out = append(out, e)
+		return e, err
+	})
+	// pgx reports a malformed actor id (22P02) lazily, from rows.Err, not from Query.
+	if pgerr.IsInvalidText(err) {
+		return []Event{}, nil
 	}
-	return out, rows.Err()
+	return out, err
 }
 
 func truncate(s string, n int) string {

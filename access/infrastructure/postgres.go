@@ -116,9 +116,6 @@ func (r *Postgres) GrantsOf(ctx context.Context, userID string) ([]domain.RoleGr
 		WHERE ur.user_id = $1
 		GROUP BY r.id, ur.granted_at, ur.expires_at
 		ORDER BY r.name`, userID)
-	if pgerr.IsInvalidText(err) {
-		return []domain.RoleGrant{}, nil
-	}
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +130,13 @@ func (r *Postgres) GrantsOf(ctx context.Context, userID string) ([]domain.RoleGr
 		g.Role = role
 		out = append(out, g)
 	}
-	return out, rows.Err()
+	// A non-coercible id (e.g. "abc" for bigint) is reported by the server while reading rows.
+	if err := rows.Err(); pgerr.IsInvalidText(err) {
+		return []domain.RoleGrant{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ---------- permissions ----------

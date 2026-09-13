@@ -22,12 +22,11 @@ type Token string
 // ID is the storage key of a session: SHA-256 of the token.
 type ID string
 
-func NewToken() (Token, error) {
+// NewToken returns a fresh 256-bit token. crypto/rand.Read never fails (it aborts the process instead).
+func NewToken() Token {
 	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return Token(base64.RawURLEncoding.EncodeToString(b[:])), nil
+	_, _ = rand.Read(b[:])
+	return Token(base64.RawURLEncoding.EncodeToString(b[:]))
 }
 
 func (t Token) ID() ID {
@@ -57,13 +56,10 @@ type Session struct {
 	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
-func New(userID string, now time.Time, p Policy) (*Session, Token, error) {
-	tok, err := NewToken()
-	if err != nil {
-		return nil, "", err
-	}
+func New(userID string, now time.Time, p Policy) (*Session, Token) {
+	tok := NewToken()
 	s := &Session{ID: tok.ID(), UserID: userID, CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(p.AbsoluteTimeout)}
-	return s, tok, nil
+	return s, tok
 }
 
 // Valid reports whether the session is alive at now.

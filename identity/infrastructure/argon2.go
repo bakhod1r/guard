@@ -29,9 +29,8 @@ var errBadHash = errors.New("identity: malformed password hash")
 
 func (h *Argon2Hasher) Hash(plain string) (string, error) {
 	salt := make([]byte, h.SaltLen)
-	if _, err := rand.Read(salt); err != nil {
-		return "", err
-	}
+	// crypto/rand.Read never returns an error (it crashes the program instead).
+	_, _ = rand.Read(salt)
 	key := argon2.IDKey([]byte(plain), salt, h.Time, h.Memory, h.Threads, h.KeyLen)
 	b64 := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",

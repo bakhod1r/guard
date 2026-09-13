@@ -39,6 +39,9 @@ const tmplExt = ".tmpl"
 //go:embed sql/*.sql.tmpl
 var embedded embed.FS
 
+// templates is the template source; a variable only so tests can inject broken templates.
+var templates fs.FS = embedded
+
 // UserRef points Guard at the host application's user table.
 type UserRef struct {
 	Table    string // as given, e.g. "users" or "auth.users"
@@ -165,7 +168,7 @@ func Render(ref UserRef) (fs.FS, error) {
 		UserIDColumn: pgx.Identifier{ref.IDColumn}.Sanitize(),
 		UserIDType:   ref.IDType,
 	}
-	entries, err := fs.ReadDir(embedded, "sql")
+	entries, err := fs.ReadDir(templates, "sql")
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +177,7 @@ func Render(ref UserRef) (fs.FS, error) {
 		if !strings.HasSuffix(e.Name(), tmplExt) {
 			continue
 		}
-		b, err := fs.ReadFile(embedded, "sql/"+e.Name())
+		b, err := fs.ReadFile(templates, "sql/"+e.Name())
 		if err != nil {
 			return nil, err
 		}
@@ -198,6 +201,10 @@ func Write(dir string, ref UserRef) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return writeFS(dir, fsys)
+}
+
+func writeFS(dir string, fsys fs.FS) ([]string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}

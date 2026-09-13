@@ -87,9 +87,7 @@ func New(id, userID, name string, scopes []string, expiresAt *time.Time, now tim
 		return nil, "", ErrBadExpiry
 	}
 	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return nil, "", err
-	}
+	_, _ = rand.Read(b[:]) // crypto/rand.Read never fails; it aborts the process instead.
 	secret := base64.RawURLEncoding.EncodeToString(b[:])
 	tok := Token(TokenPrefix + secret)
 	k := &Key{ID: id, UserID: userID, Name: name, Prefix: string(tok[:len(TokenPrefix)+8]), Hash: tok.Hash(),

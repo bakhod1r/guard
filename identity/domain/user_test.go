@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -64,5 +65,30 @@ func TestLockout(t *testing.T) {
 	u.RecordLogin(t0.Add(12 * time.Minute))
 	if u.FailedAttempts != 0 || u.LastLoginAt == nil {
 		t.Fatal("successful login did not reset counter")
+	}
+}
+
+func TestParseStatus(t *testing.T) {
+	for _, s := range []Status{StatusPending, StatusActive, StatusBanned, StatusSuspended} {
+		if got, err := ParseStatus(string(s)); err != nil || got != s {
+			t.Fatalf("%s: %q %v", s, got, err)
+		}
+	}
+	for _, bad := range []string{"", "ACTIVE", "deleted"} {
+		if _, err := ParseStatus(bad); !errors.Is(err, ErrInvalidStatus) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+}
+
+func TestDefaultLockoutIsFiveAttemptsForFifteenMinutes(t *testing.T) {
+	if l := DefaultLockout(); l.MaxAttempts != 5 || l.Duration != 15*time.Minute {
+		t.Fatalf("got %+v", l)
+	}
+}
+
+func TestNewEmailRejectsOverlongAddress(t *testing.T) {
+	if _, err := NewEmail(strings.Repeat("a", 251) + "@b.uz"); !errors.Is(err, ErrInvalidEmail) {
+		t.Fatalf("got %v", err)
 	}
 }

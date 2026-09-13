@@ -31,11 +31,8 @@ func (r *RedisSessions) Save(ctx context.Context, s *domain.Session, ttl time.Du
 	if ttl <= 0 {
 		return r.Delete(ctx, s.ID)
 	}
-	b, err := json.Marshal(s)
-	if err != nil {
-		return err
-	}
-	_, err = r.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
+	b, _ := json.Marshal(s) // Session holds only strings, times and a string map: Marshal cannot fail.
+	_, err := r.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		p.Set(ctx, r.key(s.ID), b, ttl)
 		p.SAdd(ctx, r.userKey(s.UserID), string(s.ID))
 		p.ExpireNX(ctx, r.userKey(s.UserID), time.Until(s.ExpiresAt))

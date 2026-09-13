@@ -45,26 +45,22 @@ func (p *Postgres) ByHash(ctx context.Context, hash string) (*domain.Key, error)
 }
 
 func (p *Postgres) ListByUser(ctx context.Context, userID string) ([]domain.Key, error) {
-	out := []domain.Key{}
 	if userID == "" {
-		return out, nil
+		return []domain.Key{}, nil
 	}
 	rows, err := p.db.Query(ctx, `SELECT `+keyColumns+` FROM guard_api_key WHERE user_id=$1 ORDER BY created_at DESC`, userID)
-	if pgerr.IsInvalidText(err) {
-		return out, nil
-	}
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		k, err := scanKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, *k)
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (domain.Key, error) {
+		k, err := scanKey(r)
+		return *k, err
+	})
+	// pgx reports a malformed user id (22P02) lazily, from rows.Err, not from Query.
+	if pgerr.IsInvalidText(err) {
+		return []domain.Key{}, nil
 	}
-	return out, rows.Err()
+	return out, err
 }
 
 func (p *Postgres) Revoke(ctx context.Context, userID, id string, at time.Time) error {

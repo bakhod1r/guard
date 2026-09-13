@@ -8,10 +8,7 @@ import (
 func TestSessionLifetime(t *testing.T) {
 	p := Policy{IdleTimeout: 10 * time.Minute, AbsoluteTimeout: time.Hour}
 	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	s, tok, err := New("u1", t0, p)
-	if err != nil {
-		t.Fatal(err)
-	}
+	s, tok := New("u1", t0, p)
 	if s.ID != tok.ID() || string(s.ID) == string(tok) {
 		t.Fatal("session id must be hash of token")
 	}
@@ -33,8 +30,8 @@ func TestSessionLifetime(t *testing.T) {
 }
 
 func TestTokensUnique(t *testing.T) {
-	a, _ := NewToken()
-	b, _ := NewToken()
+	a := NewToken()
+	b := NewToken()
 	if a == b || len(a) < 40 {
 		t.Fatal("weak tokens")
 	}

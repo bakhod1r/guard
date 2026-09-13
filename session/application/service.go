@@ -27,10 +27,7 @@ type StartInput struct {
 
 func (s *Service) Start(ctx context.Context, in StartInput) (*domain.Session, domain.Token, error) {
 	now := s.now().UTC()
-	sess, tok, err := domain.New(in.UserID, now, s.policy)
-	if err != nil {
-		return nil, "", err
-	}
+	sess, tok := domain.New(in.UserID, now, s.policy)
 	sess.IP, sess.UserAgent, sess.Metadata = in.IP, in.UserAgent, in.Metadata
 	if err := s.repo.Save(ctx, sess, sess.TTL(now, s.policy)); err != nil {
 		return nil, "", err
