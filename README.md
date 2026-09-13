@@ -45,24 +45,43 @@ go get github.com/bakhod1r/guard
 
 ## Quick Start
 
+Guard does **not** create a users table. It detects your existing table (`users.id` — bigint, uuid, text…) and references it.
+
 ```go
 pool, _ := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 rdb := redis.NewClient(&redis.Options{Addr: os.Getenv("REDIS_ADDR")})
 
-g, _ := guard.New(guard.Config{DB: pool, Redis: rdb})
+g, _ := guard.New(guard.Config{DB: pool, Redis: rdb, UserTable: "users", UserIDColumn: "id"})
 
-guard.WriteMigrations("./migrations/guard") // copies SQL into your project (never overwrites)
-g.Migrate(ctx, "./migrations/guard")         // applies it (goose, table guard_schema_version)
-g.EnsureAdmin(ctx, "admin@example.com", os.Getenv("ADMIN_PASSWORD"))
+g.WriteMigrations(ctx, "./migrations/guard") // detects users.id type, renders SQL into your repo (never overwrites)
+g.Migrate(ctx, "./migrations/guard")         // goose, version table guard_schema_version
+
+// give an existing user of yours login credentials + admin role
+g.EnsureAdmin(ctx, adminUserID, "admin@example.com", os.Getenv("ADMIN_PASSWORD"))
 
 r := gin.Default()
-api := r.Group("/api")
-ginguard.Mount(api, g, ginguard.Options{})   // /api/auth/* and /api/guard/*
+opts := ginguard.Options{
+    // optional self-registration: insert a NEW row into your users table, return its id
+    CreateUser: func(ctx context.Context, email string) (string, error) { /* INSERT ... RETURNING id::text */ },
+}
+ginguard.Mount(r.Group("/api"), g, opts)          // /api/auth/*, /api/guard/*
+adminui.Mount(r, g, adminui.Options{})            // /guard-admin (HTML panel)
 
-api.GET("/invoices/:id", ginguard.RequirePermission(g, ginguard.Options{}, "invoice.read"), handler)
+r.GET("/api/invoices/:id", ginguard.RequirePermission(g, opts, "invoice.read"), handler)
 ```
 
-Full runnable example: [examples/gin](examples/gin/main.go).
+Link accounts for users you already have: `g.CreateAccount(ctx, userID, email, password, attrs, guard.RequestMeta{})`.
+
+### Run the example
+
+```bash
+docker compose -f examples/gin/docker-compose.yml up -d
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/guard?sslmode=disable REDIS_ADDR=localhost:6379 \
+GUARD_ADMIN_EMAIL=admin@example.com GUARD_ADMIN_PASSWORD=change-me-now GUARD_INSECURE_COOKIE=1 \
+go run ./examples/gin
+# API:   http://localhost:8080/api/auth/login
+# Panel: http://localhost:8080/guard-admin
+```
 
 ## HTTP API (ginguard.Mount)
 
@@ -110,7 +129,7 @@ Rate limiting: `/auth/login` and `/auth/register` are limited per IP (default 10
 | `access` | role, permission, policy tree, `Decide` | authorize, role/policy admin | PostgreSQL, memory |
 | `apikey` | key, scopes, expiry/revoke | issue, resolve, revoke | PostgreSQL, memory |
 
-`kernel/migrations` (embedded goose SQL), `ratelimit` (Redis sliding window), `audit`, `ginguard` (interfaces), `guardtest` (in-memory Guard for tests).
+`kernel/migrations` (goose SQL templates rendered against your user table), `adminui` (html/template admin panel), `ratelimit` (Redis sliding window), `audit`, `ginguard` (interfaces), `guardtest` (in-memory Guard for tests).
 
 ## Testing
 
@@ -118,7 +137,7 @@ Rate limiting: `/auth/login` and `/auth/register` are limited per IP (default 10
 go test ./...
 # integration (PostgreSQL + Redis)
 GUARD_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/guard?sslmode=disable \
-GUARD_TEST_REDIS_ADDR=localhost:6379 go test -run Integration .
+GUARD_TEST_REDIS_ADDR=localhost:6379 go test -race -cover ./...   # 100% statements
 ```
 
 ## Core Components

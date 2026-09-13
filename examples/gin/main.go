@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/bakhod1r/guard"
+	"github.com/bakhod1r/guard/adminui"
 	"github.com/bakhod1r/guard/ginguard"
 	identitydomain "github.com/bakhod1r/guard/identity/domain"
 	"github.com/bakhod1r/guard/kernel/pgerr"
@@ -94,6 +95,9 @@ func main() {
 	api.GET("/reports", ginguard.RequirePermission(g, opts, "report.read"), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"reports": []string{"q1", "q2"}, "by": ginguard.PrincipalFrom(c).User.Email})
 	})
+
+	// Admin panel: users, roles, permissions, ABAC policies, sessions, API keys, audit.
+	adminui.Mount(r, g, adminui.Options{Path: "/guard-admin", InsecureCookie: opts.InsecureCookie})
 
 	log.Fatal(r.Run(env("ADDR", ":8080")))
 }
