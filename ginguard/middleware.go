@@ -3,7 +3,9 @@ package ginguard
 
 import (
 	"errors"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,7 +13,9 @@ import (
 
 	"github.com/bakhod1r/guard"
 	accessdomain "github.com/bakhod1r/guard/access/domain"
+	apikeydomain "github.com/bakhod1r/guard/apikey/domain"
 	identitydomain "github.com/bakhod1r/guard/identity/domain"
+	"github.com/bakhod1r/guard/ratelimit"
 	sessiondomain "github.com/bakhod1r/guard/session/domain"
 )
 
@@ -25,6 +29,9 @@ type Options struct {
 	AuthPath string
 	// AdminPath prefixes management routes. Default "/guard".
 	AdminPath string
+	// AuthRateLimit throttles /login and /register per client IP.
+	// Zero value: 10 requests per minute. Limit < 0 disables.
+	AuthRateLimit ratelimit.Rule
 }
 
 func (o Options) withDefaults() Options {
@@ -36,6 +43,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.AdminPath == "" {
 		o.AdminPath = "/guard"
+	}
+	if o.AuthRateLimit == (ratelimit.Rule{}) {
+		o.AuthRateLimit = ratelimit.Rule{Limit: 10, Window: time.Minute}
 	}
 	return o
 }
@@ -50,12 +60,16 @@ func PrincipalFrom(c *gin.Context) *guard.Principal {
 	return nil
 }
 
-func token(c *gin.Context, o Options) guard.SessionToken {
+// credential reads, in order: X-API-Key, Authorization: Bearer, session cookie.
+func credential(c *gin.Context, o Options) string {
+	if k := strings.TrimSpace(c.GetHeader("X-API-Key")); k != "" {
+		return k
+	}
 	if h := c.GetHeader("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
-		return guard.SessionToken(strings.TrimSpace(h[7:]))
+		return strings.TrimSpace(h[7:])
 	}
 	if v, err := c.Cookie(o.CookieName); err == nil {
-		return guard.SessionToken(v)
+		return v
 	}
 	return ""
 }
@@ -69,7 +83,7 @@ func Authenticate(g *guard.Guard, opts Options) gin.HandlerFunc {
 	o := opts.withDefaults()
 	return func(c *gin.Context) {
 		if PrincipalFrom(c) == nil {
-			if tok := token(c, o); tok != "" {
+			if tok := credential(c, o); tok != "" {
 				if p, err := g.Authenticate(c.Request.Context(), tok); err == nil {
 					c.Set(principalKey, p)
 				}
@@ -95,7 +109,7 @@ func authenticate(c *gin.Context, g *guard.Guard, o Options) bool {
 	if PrincipalFrom(c) != nil {
 		return true
 	}
-	tok := token(c, o)
+	tok := credential(c, o)
 	if tok == "" {
 		abort(c, http.StatusUnauthorized, "unauthenticated", "authentication required")
 		return false
@@ -106,12 +120,75 @@ func authenticate(c *gin.Context, g *guard.Guard, o Options) bool {
 		c.Set(principalKey, p)
 		return true
 	case errors.Is(err, sessiondomain.ErrSessionNotFound), errors.Is(err, sessiondomain.ErrSessionExpired),
-		errors.Is(err, identitydomain.ErrUserBlocked):
-		abort(c, http.StatusUnauthorized, "unauthenticated", "session expired or invalid")
+		errors.Is(err, identitydomain.ErrUserBlocked), errors.Is(err, apikeydomain.ErrKeyInvalid):
+		abort(c, http.StatusUnauthorized, "unauthenticated", "credential expired or invalid")
 	default:
 		fail(c, err)
 	}
 	return false
+}
+
+// RequireSession is RequireAuth that refuses API keys (account-level operations).
+func RequireSession(g *guard.Guard, opts Options) gin.HandlerFunc {
+	o := opts.withDefaults()
+	return func(c *gin.Context) {
+		if !authenticate(c, g, o) {
+			return
+		}
+		if PrincipalFrom(c).Session == nil {
+			fail(c, guard.ErrSessionRequired)
+			return
+		}
+		c.Next()
+	}
+}
+
+// KeyFunc derives the rate-limit bucket for a request.
+type KeyFunc func(c *gin.Context) string
+
+// ByIP buckets by client IP.
+func ByIP(c *gin.Context) string { return "ip:" + c.ClientIP() }
+
+// ByPrincipal buckets by API key, then user, falling back to IP.
+// Place it after an authenticating middleware.
+func ByPrincipal(c *gin.Context) string {
+	if p := PrincipalFrom(c); p != nil {
+		if p.APIKey != nil {
+			return "key:" + p.APIKey.ID
+		}
+		return "user:" + string(p.User.ID)
+	}
+	return ByIP(c)
+}
+
+// RateLimit rejects requests over rule with 429 and sets X-RateLimit-* headers.
+// name separates buckets of different routes. Limiter errors fail open
+// (recorded via c.Error) so a Redis outage does not take the API down.
+func RateLimit(g *guard.Guard, name string, rule ratelimit.Rule, key KeyFunc) gin.HandlerFunc {
+	if err := rule.Valid(); err != nil {
+		panic("ginguard: " + err.Error())
+	}
+	return func(c *gin.Context) {
+		if g.Limiter == nil {
+			c.Next()
+			return
+		}
+		res, err := g.Limiter.Allow(c.Request.Context(), name+":"+key(c), rule)
+		if err != nil {
+			_ = c.Error(err)
+			c.Next()
+			return
+		}
+		c.Header("X-RateLimit-Limit", strconv.Itoa(res.Limit))
+		c.Header("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+		c.Header("X-RateLimit-Reset", strconv.Itoa(int(math.Ceil(res.ResetAfter.Seconds()))))
+		if !res.Allowed {
+			c.Header("Retry-After", strconv.Itoa(int(math.Ceil(res.RetryAfter.Seconds()))))
+			abort(c, http.StatusTooManyRequests, "rate_limited", "too many requests")
+			return
+		}
+		c.Next()
+	}
 }
 
 // ResourceFunc builds the ABAC resource from the request (path params, loaded entity...).
@@ -210,6 +287,13 @@ var errorMap = []struct {
 	{accessdomain.ErrPermissionNotFound, http.StatusNotFound, "permission_not_found"},
 	{accessdomain.ErrPolicyNotFound, http.StatusNotFound, "policy_not_found"},
 	{accessdomain.ErrSubjectNotFound, http.StatusNotFound, "user_not_found"},
+	{guard.ErrSessionRequired, http.StatusForbidden, "session_required"},
+	{apikeydomain.ErrInvalidName, http.StatusBadRequest, "invalid_name"},
+	{apikeydomain.ErrInvalidScope, http.StatusBadRequest, "invalid_scope"},
+	{apikeydomain.ErrNoScopes, http.StatusBadRequest, "invalid_scope"},
+	{apikeydomain.ErrBadExpiry, http.StatusBadRequest, "invalid_expiry"},
+	{apikeydomain.ErrKeyNotFound, http.StatusNotFound, "api_key_not_found"},
+	{apikeydomain.ErrKeyInvalid, http.StatusUnauthorized, "unauthenticated"},
 }
 
 func fail(c *gin.Context, err error) {

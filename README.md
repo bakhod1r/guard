@@ -70,7 +70,10 @@ Full runnable example: [examples/gin](examples/gin/main.go).
 |---|---|
 | `POST /auth/register`, `POST /auth/login` | public |
 | `POST /auth/logout`, `POST /auth/logout-all`, `GET /auth/me`, `PUT /auth/password` | session |
-| `GET /auth/sessions`, `DELETE /auth/sessions/:id`, `POST /auth/authorize` | session |
+| `GET /auth/sessions`, `DELETE /auth/sessions/:id` | session |
+| `GET /auth/me`, `POST /auth/authorize` | session or API key |
+| `GET\|POST /auth/api-keys`, `DELETE /auth/api-keys/:id` | session (keys cannot mint keys) |
+| `GET\|DELETE /guard/users/:id/api-keys` | `apikey.read` / `apikey.revoke` |
 | `GET /guard/users/:id` | `user.read` or self |
 | `PUT /guard/users/:id/status`, `PUT /guard/users/:id/attributes` | `user.write` |
 | `GET /guard/users/:id/roles` | `role.read` or self |
@@ -82,7 +85,12 @@ Full runnable example: [examples/gin](examples/gin/main.go).
 | `GET\|POST /guard/policies`, `GET\|PUT\|DELETE /guard/policies/:id` | `policy.read` / `policy.write` |
 | `GET /guard/audit` | `audit.read` |
 
-Token: `Authorization: Bearer <token>` or the `guard_session` cookie (HttpOnly, Secure, SameSite=Strict).
+Credential: `X-API-Key: gk_...`, `Authorization: Bearer <token|gk_...>`, or the `guard_session` cookie (HttpOnly, Secure, SameSite=Strict).
+
+API keys act as their owner narrowed by scopes (`invoice.read`, `invoice.*`, `*`); only the SHA-256 is stored and the token is shown once.
+
+Rate limiting: `/auth/login` and `/auth/register` are limited per IP (default 10/min, `Options.AuthRateLimit`). Any route:
+`ginguard.RateLimit(g, "reports", ratelimit.Rule{Limit: 100, Window: time.Minute}, ginguard.ByPrincipal)` — Redis sliding window, `X-RateLimit-*` and `Retry-After` headers, fails open if Redis errors.
 
 ## Authorization model
 
@@ -100,8 +108,9 @@ Token: `Authorization: Bearer <token>` or the `guard_session` cookie (HttpOnly, 
 | `identity` | user, email, status, lockout | register, authenticate, password | argon2id, PostgreSQL |
 | `session` | token (SHA-256 id), idle/absolute timeout | start, resolve (sliding), revoke | Redis |
 | `access` | role, permission, policy tree, `Decide` | authorize, role/policy admin | PostgreSQL, memory |
+| `apikey` | key, scopes, expiry/revoke | issue, resolve, revoke | PostgreSQL, memory |
 
-`kernel/migrations` (embedded goose SQL), `audit`, `ginguard` (interfaces), `guardtest` (in-memory Guard for tests).
+`kernel/migrations` (embedded goose SQL), `ratelimit` (Redis sliding window), `audit`, `ginguard` (interfaces), `guardtest` (in-memory Guard for tests).
 
 ## Testing
 
@@ -132,8 +141,8 @@ Most Go applications combine multiple libraries for sessions, authorization, API
 
 - [x] Session management
 - [x] RBAC & ABAC
-- [ ] API keys
-- [ ] Rate limiting
+- [x] API keys
+- [x] Rate limiting
 - [x] Audit logging
 - [ ] Service-to-service authentication
 - [ ] Admin dashboard

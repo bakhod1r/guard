@@ -16,9 +16,11 @@ import (
 // Mount registers every Guard route on r.
 //
 //	Self-service (AuthPath, default /auth):
-//	  POST   /register              POST /login          POST /logout
-//	  POST   /logout-all            GET  /me             PUT  /password
-//	  GET    /sessions              DELETE /sessions/:id POST /authorize
+//	  POST   /register  POST /login       (rate limited per IP)
+//	  GET    /me        POST /authorize   (session or API key)
+//	  POST   /logout    POST /logout-all  PUT /password           (session only)
+//	  GET    /sessions  DELETE /sessions/:id
+//	  GET    /api-keys  POST /api-keys    DELETE /api-keys/:id
 //	Management (AdminPath, default /guard), each guarded by a permission:
 //	  GET    /users/:id                       user.read (or self)
 //	  PUT    /users/:id/status                user.write
@@ -28,6 +30,8 @@ import (
 //	  DELETE /users/:id/roles/:role           role.assign
 //	  GET    /users/:id/sessions              session.read
 //	  DELETE /users/:id/sessions              session.revoke
+//	  GET    /users/:id/api-keys              apikey.read
+//	  DELETE /users/:id/api-keys              apikey.revoke
 //	  GET    /roles  POST /roles              role.read / role.write
 //	  GET    /roles/:name  DELETE /roles/:name
 //	  POST   /roles/:name/permissions         role.write
@@ -42,16 +46,23 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	perm := func(code string) gin.HandlerFunc { return RequirePermission(g, o, code) }
 
 	a := r.Group(o.AuthPath)
-	a.POST("/register", h.register)
-	a.POST("/login", h.login)
-	authed := a.Group("", RequireAuth(g, o))
-	authed.POST("/logout", h.logout)
-	authed.POST("/logout-all", h.logoutAll)
-	authed.GET("/me", h.me)
-	authed.PUT("/password", h.changePassword)
-	authed.GET("/sessions", h.mySessions)
-	authed.DELETE("/sessions/:id", h.revokeMySession)
-	authed.POST("/authorize", h.authorize)
+	var limited []gin.HandlerFunc
+	if o.AuthRateLimit.Limit > 0 {
+		limited = append(limited, RateLimit(g, "auth", o.AuthRateLimit, ByIP))
+	}
+	a.POST("/register", append(limited, h.register)...)
+	a.POST("/login", append(limited, h.login)...)
+	a.GET("/me", RequireAuth(g, o), h.me)
+	a.POST("/authorize", RequireAuth(g, o), h.authorize)
+	session := a.Group("", RequireSession(g, o))
+	session.POST("/logout", h.logout)
+	session.POST("/logout-all", h.logoutAll)
+	session.PUT("/password", h.changePassword)
+	session.GET("/sessions", h.mySessions)
+	session.DELETE("/sessions/:id", h.revokeMySession)
+	session.GET("/api-keys", h.myAPIKeys)
+	session.POST("/api-keys", h.issueAPIKey)
+	session.DELETE("/api-keys/:id", h.revokeMyAPIKey)
 
 	m := r.Group(o.AdminPath)
 	m.GET("/users/:id", Require(g, o, "user", "read", ParamResource("id")), h.getUser)
@@ -62,6 +73,8 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	m.DELETE("/users/:id/roles/:role", perm("role.assign"), h.unassignRole)
 	m.GET("/users/:id/sessions", Require(g, o, "session", "read", userOwned), h.userSessions)
 	m.DELETE("/users/:id/sessions", Require(g, o, "session", "revoke", userOwned), h.revokeUserSessions)
+	m.GET("/users/:id/api-keys", Require(g, o, "apikey", "read", userOwned), h.userAPIKeys)
+	m.DELETE("/users/:id/api-keys", Require(g, o, "apikey", "revoke", userOwned), h.revokeUserAPIKeys)
 
 	m.GET("/roles", perm("role.read"), h.listRoles)
 	m.POST("/roles", perm("role.write"), h.createRole)
@@ -197,7 +210,14 @@ func (h *handlers) logoutAll(c *gin.Context) {
 
 func (h *handlers) me(c *gin.Context) {
 	p := PrincipalFrom(c)
-	c.JSON(http.StatusOK, gin.H{"user": toUser(p.User), "roles": p.Roles, "session_expires_at": p.Session.ExpiresAt})
+	out := gin.H{"user": toUser(p.User), "roles": p.Roles}
+	if p.Session != nil {
+		out["session_expires_at"] = p.Session.ExpiresAt
+	}
+	if p.APIKey != nil {
+		out["api_key"] = p.APIKey
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 func (h *handlers) changePassword(c *gin.Context) {
@@ -278,6 +298,63 @@ func (h *handlers) authorize(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, d)
+}
+
+// ---------- API keys ----------
+
+func (h *handlers) myAPIKeys(c *gin.Context) {
+	keys, err := h.g.APIKeys.List(c.Request.Context(), string(PrincipalFrom(c).User.ID))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"api_keys": keys})
+}
+
+func (h *handlers) issueAPIKey(c *gin.Context) {
+	var in struct {
+		Name      string     `json:"name" binding:"required"`
+		Scopes    []string   `json:"scopes" binding:"required"`
+		ExpiresAt *time.Time `json:"expires_at"`
+	}
+	if !bind(c, &in) {
+		return
+	}
+	k, tok, err := h.g.IssueAPIKey(c.Request.Context(), PrincipalFrom(c), in.Name, in.Scopes, in.ExpiresAt, meta(c))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	// The token is never retrievable again.
+	c.JSON(http.StatusCreated, gin.H{"api_key": k, "token": tok})
+}
+
+func (h *handlers) revokeMyAPIKey(c *gin.Context) {
+	uid := string(PrincipalFrom(c).User.ID)
+	if err := h.g.APIKeys.Revoke(c.Request.Context(), uid, c.Param("id")); err != nil {
+		fail(c, err)
+		return
+	}
+	h.audit(c, "apikey.revoke", c.Param("id"), nil)
+	c.Status(http.StatusNoContent)
+}
+
+func (h *handlers) userAPIKeys(c *gin.Context) {
+	keys, err := h.g.APIKeys.List(c.Request.Context(), c.Param("id"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"api_keys": keys})
+}
+
+func (h *handlers) revokeUserAPIKeys(c *gin.Context) {
+	if err := h.g.APIKeys.RevokeAll(c.Request.Context(), c.Param("id")); err != nil {
+		fail(c, err)
+		return
+	}
+	h.audit(c, "apikey.revoke_all", c.Param("id"), nil)
+	c.Status(http.StatusNoContent)
 }
 
 // ---------- users ----------
@@ -374,7 +451,11 @@ func (h *handlers) userSessions(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"sessions": toSessions(list, PrincipalFrom(c).Session.ID)})
+	var current sessiondomain.ID
+	if s := PrincipalFrom(c).Session; s != nil {
+		current = s.ID
+	}
+	c.JSON(http.StatusOK, gin.H{"sessions": toSessions(list, current)})
 }
 
 func (h *handlers) revokeUserSessions(c *gin.Context) {

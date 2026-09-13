@@ -9,6 +9,7 @@ package guard
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -16,11 +17,15 @@ import (
 	accessapp "github.com/bakhod1r/guard/access/application"
 	accessdomain "github.com/bakhod1r/guard/access/domain"
 	accessinfra "github.com/bakhod1r/guard/access/infrastructure"
+	apikeyapp "github.com/bakhod1r/guard/apikey/application"
+	apikeydomain "github.com/bakhod1r/guard/apikey/domain"
+	apikeyinfra "github.com/bakhod1r/guard/apikey/infrastructure"
 	"github.com/bakhod1r/guard/audit"
 	identityapp "github.com/bakhod1r/guard/identity/application"
 	identitydomain "github.com/bakhod1r/guard/identity/domain"
 	identityinfra "github.com/bakhod1r/guard/identity/infrastructure"
 	"github.com/bakhod1r/guard/kernel/migrations"
+	"github.com/bakhod1r/guard/ratelimit"
 	sessionapp "github.com/bakhod1r/guard/session/application"
 	sessiondomain "github.com/bakhod1r/guard/session/domain"
 	sessioninfra "github.com/bakhod1r/guard/session/infrastructure"
@@ -41,9 +46,11 @@ type (
 	Resource      = accessdomain.Resource
 	Decision      = accessdomain.Decision
 	AuditEvent    = audit.Event
+	APIKey        = apikeydomain.Key
+	APIKeyToken   = apikeydomain.Token
 )
 
-var ErrForbidden = errors.New("guard: forbidden")
+var ErrSessionRequired = errors.New("guard: this operation requires a session, not an API key")
 
 type Config struct {
 	DB    *pgxpool.Pool
@@ -62,7 +69,10 @@ type Guard struct {
 	Identity *identityapp.Service
 	Sessions *sessionapp.Service
 	Access   *accessapp.Service
+	APIKeys  *apikeyapp.Service
 	Audit    audit.Log
+	// Limiter is nil when no Redis-backed limiter was configured.
+	Limiter ratelimit.Limiter
 
 	db          *pgxpool.Pool
 	defaultRole string
@@ -80,6 +90,8 @@ func New(cfg Config) (*Guard, error) {
 		Roles:    store,
 		Policies: store,
 		Audit:    audit.NewPostgres(cfg.DB),
+		APIKeys:  apikeyinfra.NewPostgres(cfg.DB),
+		Limiter:  ratelimit.NewRedis(cfg.Redis, cfg.RedisPrefix),
 	}, cfg)
 	g.db = cfg.DB
 	return g, nil
@@ -93,6 +105,8 @@ type Repositories struct {
 	Roles    accessdomain.RoleRepository
 	Policies accessdomain.PolicyRepository
 	Audit    audit.Log
+	APIKeys  apikeydomain.Repository
+	Limiter  ratelimit.Limiter
 }
 
 func Build(r Repositories, cfg Config) *Guard {
@@ -112,7 +126,9 @@ func Build(r Repositories, cfg Config) *Guard {
 		Identity:    identityapp.NewService(r.Users, r.Hasher, cfg.Lockout),
 		Sessions:    sessionapp.NewService(r.Sessions, cfg.Session),
 		Access:      accessapp.NewService(r.Roles, r.Policies),
+		APIKeys:     apikeyapp.NewService(r.APIKeys),
 		Audit:       r.Audit,
+		Limiter:     r.Limiter,
 		defaultRole: cfg.DefaultRole,
 	}
 }
@@ -176,6 +192,9 @@ func (g *Guard) Login(ctx context.Context, email, password string, meta RequestM
 }
 
 func (g *Guard) Logout(ctx context.Context, p *Principal, meta RequestMeta) error {
+	if p.Session == nil {
+		return ErrSessionRequired
+	}
 	if err := g.Sessions.Revoke(ctx, p.Session.ID); err != nil {
 		return err
 	}
@@ -183,41 +202,61 @@ func (g *Guard) Logout(ctx context.Context, p *Principal, meta RequestMeta) erro
 	return nil
 }
 
-// Principal is the authenticated caller of a request.
+// Principal is the authenticated caller of a request. Exactly one of
+// Session and APIKey is set.
 type Principal struct {
 	User    *User
 	Session *Session
+	APIKey  *APIKey
 	Roles   []Role
 }
 
-// Authenticate resolves a session token into a principal. The user row is
-// re-read on every call so bans and role changes apply immediately.
-func (g *Guard) Authenticate(ctx context.Context, tok SessionToken) (*Principal, error) {
-	s, err := g.Sessions.Resolve(ctx, tok)
+// Authenticate resolves a session token or an API key ("gk_...") into a
+// principal. The user row is re-read on every call so bans and role changes
+// apply immediately.
+func (g *Guard) Authenticate(ctx context.Context, credential string) (*Principal, error) {
+	if apikeydomain.LooksLikeKey(credential) {
+		k, err := g.APIKeys.Resolve(ctx, apikeydomain.Token(credential))
+		if err != nil {
+			return nil, err
+		}
+		return g.principal(ctx, k.UserID, &Principal{APIKey: k}, func() {})
+	}
+	s, err := g.Sessions.Resolve(ctx, SessionToken(credential))
 	if err != nil {
 		return nil, err
 	}
-	u, err := g.Identity.User(ctx, identitydomain.UserID(s.UserID))
+	return g.principal(ctx, s.UserID, &Principal{Session: s}, func() { _ = g.Sessions.Revoke(ctx, s.ID) })
+}
+
+func (g *Guard) principal(ctx context.Context, userID string, p *Principal, onMissingUser func()) (*Principal, error) {
+	u, err := g.Identity.User(ctx, identitydomain.UserID(userID))
 	if errors.Is(err, identitydomain.ErrUserNotFound) {
-		_ = g.Sessions.Revoke(ctx, s.ID)
+		onMissingUser()
 		return nil, sessiondomain.ErrSessionNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
 	if err := u.CanLogin(); err != nil {
-		_ = g.Sessions.RevokeAll(ctx, s.UserID)
+		if p.Session != nil {
+			_ = g.Sessions.RevokeAll(ctx, userID)
+		}
 		return nil, err
 	}
-	roles, err := g.Access.ActiveRoles(ctx, s.UserID)
+	roles, err := g.Access.ActiveRoles(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
-	return &Principal{User: u, Session: s, Roles: roles}, nil
+	p.User, p.Roles = u, roles
+	return p, nil
 }
 
 // Authorize decides whether p may perform action on resource.
 func (g *Guard) Authorize(ctx context.Context, p *Principal, action string, res Resource, env map[string]any) (Decision, error) {
+	if p.APIKey != nil && !p.APIKey.Allows(res.Type, action) {
+		return Decision{Allowed: false, Reason: "api key scope does not cover " + res.Type + "." + action}, nil
+	}
 	attrs := map[string]any{}
 	for k, v := range p.User.Attributes {
 		attrs[k] = v
@@ -248,6 +287,21 @@ func (g *Guard) SetUserStatus(ctx context.Context, actorID, userID string, statu
 	}
 	g.record(ctx, audit.Event{ActorID: actorID, Action: "user.status", Target: userID, Success: true, Metadata: map[string]any{"status": string(status)}})
 	return nil
+}
+
+// IssueAPIKey creates a key for p's user. Only session principals may issue
+// keys, so a leaked key cannot mint more keys.
+func (g *Guard) IssueAPIKey(ctx context.Context, p *Principal, name string, scopes []string, expiresAt *time.Time, meta RequestMeta) (*APIKey, APIKeyToken, error) {
+	if p.Session == nil {
+		return nil, "", ErrSessionRequired
+	}
+	k, tok, err := g.APIKeys.Issue(ctx, string(p.User.ID), name, scopes, expiresAt)
+	if err != nil {
+		return nil, "", err
+	}
+	g.record(ctx, audit.Event{ActorID: string(p.User.ID), Action: "apikey.issue", Target: k.ID, Success: true,
+		IP: meta.IP, UserAgent: meta.UserAgent, Metadata: map[string]any{"name": k.Name, "scopes": k.Scopes}})
+	return k, tok, nil
 }
 
 // EnsureAdmin creates the account if missing and grants it the admin role.

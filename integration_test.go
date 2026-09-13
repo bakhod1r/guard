@@ -13,6 +13,7 @@ import (
 	"github.com/bakhod1r/guard"
 	accessdomain "github.com/bakhod1r/guard/access/domain"
 	"github.com/bakhod1r/guard/kernel/migrations"
+	"github.com/bakhod1r/guard/ratelimit"
 )
 
 // Runs against real services:
@@ -65,7 +66,7 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := g.Authenticate(ctx, res.Token)
+	p, err := g.Authenticate(ctx, string(res.Token))
 	if err != nil || len(p.Roles) != 1 || p.Roles[0].Name != "user" || p.User.Attributes["department"] != "sales" {
 		t.Fatalf("authenticate: %+v %v", p, err)
 	}
@@ -84,7 +85,7 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 	if err := g.Access.AssignRole(ctx, string(u.ID), "analyst", string(admin.ID), &exp); err != nil {
 		t.Fatal(err)
 	}
-	p, _ = g.Authenticate(ctx, res.Token)
+	p, _ = g.Authenticate(ctx, string(res.Token))
 	if d, err := g.Authorize(ctx, p, "read", guard.Resource{Type: "report"}, nil); err != nil || !d.Allowed {
 		t.Fatalf("rbac: %+v %v", d, err)
 	}
@@ -117,11 +118,41 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 		t.Fatalf("foreign read allowed: %+v", d)
 	}
 
+	// API key narrows the owner's access; stored hashed in PostgreSQL.
+	key, tok, err := g.IssueAPIKey(ctx, p, "etl", []string{"user.read"}, nil, guard.RequestMeta{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, err := g.Authenticate(ctx, string(tok))
+	if err != nil || kp.APIKey == nil || kp.APIKey.ID != key.ID {
+		t.Fatalf("api key auth: %+v %v", kp, err)
+	}
+	if d, _ := g.Authorize(ctx, kp, "read", guard.Resource{Type: "report"}, map[string]any{"day": "mon"}); d.Allowed {
+		t.Fatalf("key scope ignored: %+v", d)
+	}
+	if d, _ := g.Authorize(ctx, kp, "read", guard.Resource{Type: "user", ID: string(u.ID)}, nil); !d.Allowed {
+		t.Fatalf("key in scope denied: %+v", d)
+	}
+	if err := g.APIKeys.Revoke(ctx, string(u.ID), key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.Authenticate(ctx, string(tok)); err == nil {
+		t.Fatal("revoked key authenticated")
+	}
+
+	// Rate limiter on real Redis.
+	rule := ratelimit.Rule{Limit: 2, Window: time.Second}
+	for i, want := range []bool{true, true, false} {
+		if r, err := g.Limiter.Allow(ctx, "it:"+string(u.ID), rule); err != nil || r.Allowed != want {
+			t.Fatalf("limiter hit %d: %+v %v", i, r, err)
+		}
+	}
+
 	// Ban revokes Redis sessions.
 	if err := g.SetUserStatus(ctx, string(admin.ID), string(u.ID), "banned"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.Authenticate(ctx, res.Token); err == nil {
+	if _, err := g.Authenticate(ctx, string(res.Token)); err == nil {
 		t.Fatal("banned session still valid")
 	}
 

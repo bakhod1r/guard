@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -15,6 +16,7 @@ import (
 	"github.com/bakhod1r/guard"
 	"github.com/bakhod1r/guard/ginguard"
 	"github.com/bakhod1r/guard/guardtest"
+	"github.com/bakhod1r/guard/ratelimit"
 )
 
 type client struct {
@@ -46,7 +48,7 @@ func setup(t *testing.T) (client, *guard.Guard) {
 	g := guardtest.New(redis.NewClient(&redis.Options{Addr: mr.Addr()}), guard.Config{})
 	r := gin.New()
 	api := r.Group("/api")
-	ginguard.Mount(api, g, ginguard.Options{})
+	ginguard.Mount(api, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: -1}})
 	api.GET("/invoices/:id", ginguard.RequirePermission(g, ginguard.Options{}, "invoice.read"), func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"id": c.Param("id")})
 	})
@@ -208,5 +210,94 @@ func TestLockout(t *testing.T) {
 	}
 	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "x@example.com", "password": "password123"}); code != http.StatusTooManyRequests {
 		t.Fatalf("lockout not enforced: %d", code)
+	}
+}
+
+func TestAPIKeys(t *testing.T) {
+	c, g := setup(t)
+	if _, err := g.EnsureAdmin(context.Background(), "admin@example.com", "admin-password"); err != nil {
+		t.Fatal(err)
+	}
+	_, body := c.do("POST", "/api/auth/login", "", map[string]any{"email": "admin@example.com", "password": "admin-password"})
+	admin := body["token"].(string)
+
+	if code, b := c.do("POST", "/api/auth/api-keys", admin, map[string]any{"name": "ci", "scopes": []string{"Bad"}}); code != http.StatusBadRequest {
+		t.Fatalf("bad scope: %d %v", code, b)
+	}
+	code, created := c.do("POST", "/api/auth/api-keys", admin, map[string]any{"name": "ci", "scopes": []string{"invoice.read"}})
+	if code != http.StatusCreated {
+		t.Fatalf("issue: %d %v", code, created)
+	}
+	key := created["token"].(string)
+	keyID := created["api_key"].(map[string]any)["id"].(string)
+
+	// Wildcard admin owner, but the key is scoped to invoice.read only.
+	if code, _ := c.do("GET", "/api/invoices/7", key, nil); code != http.StatusOK {
+		t.Fatalf("scoped route: %d", code)
+	}
+	if code, _ := c.do("GET", "/api/guard/roles", key, nil); code != http.StatusForbidden {
+		t.Fatalf("key escaped its scope: %d", code)
+	}
+	// X-API-Key header works too.
+	req := httptest.NewRequest("GET", "/api/auth/me", nil)
+	req.Header.Set("X-API-Key", key)
+	w := httptest.NewRecorder()
+	c.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("X-API-Key me: %d", w.Code)
+	}
+	// A key cannot manage the account or mint more keys.
+	if code, _ := c.do("POST", "/api/auth/api-keys", key, map[string]any{"name": "x", "scopes": []string{"*"}}); code != http.StatusForbidden {
+		t.Fatalf("key minted key: %d", code)
+	}
+	if code, _ := c.do("POST", "/api/auth/logout", key, nil); code != http.StatusForbidden {
+		t.Fatalf("key logout: %d", code)
+	}
+
+	_, list := c.do("GET", "/api/auth/api-keys", admin, nil)
+	if n := len(list["api_keys"].([]any)); n != 1 {
+		t.Fatalf("list: %d", n)
+	}
+	if _, ok := list["api_keys"].([]any)[0].(map[string]any)["hash"]; ok {
+		t.Fatal("hash leaked in response")
+	}
+	if code, _ := c.do("DELETE", "/api/auth/api-keys/"+keyID, admin, nil); code != http.StatusNoContent {
+		t.Fatalf("revoke: %d", code)
+	}
+	if code, _ := c.do("GET", "/api/invoices/7", key, nil); code != http.StatusUnauthorized {
+		t.Fatalf("revoked key works: %d", code)
+	}
+	if code, _ := c.do("GET", "/api/invoices/7", "gk_forged", nil); code != http.StatusUnauthorized {
+		t.Fatalf("forged key: %d", code)
+	}
+}
+
+func TestAuthRateLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mr := miniredis.RunT(t)
+	g := guardtest.New(redis.NewClient(&redis.Options{Addr: mr.Addr()}), guard.Config{})
+	r := gin.New()
+	ginguard.Mount(r, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: 3, Window: time.Minute}})
+	c := client{t: t, router: r}
+	for i := 0; i < 3; i++ {
+		if code, _ := c.do("POST", "/auth/login", "", map[string]any{"email": "n@example.com", "password": "whatever1"}); code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: %d", i, code)
+		}
+	}
+	req := httptest.NewRequest("POST", "/auth/login", bytes.NewBufferString(`{"email":"n@example.com","password":"whatever1"}`))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusTooManyRequests || w.Header().Get("Retry-After") == "" || w.Header().Get("X-RateLimit-Limit") != "3" {
+		t.Fatalf("rate limit: %d %v", w.Code, w.Header())
+	}
+
+	// Disabled with a negative limit.
+	r2 := gin.New()
+	ginguard.Mount(r2, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: -1}})
+	c2 := client{t: t, router: r2}
+	for i := 0; i < 5; i++ {
+		if code, _ := c2.do("POST", "/auth/login", "", map[string]any{"email": "z@example.com", "password": "whatever1"}); code == http.StatusTooManyRequests {
+			t.Fatal("disabled limiter still limits")
+		}
 	}
 }

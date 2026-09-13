@@ -10,8 +10,10 @@ import (
 	"github.com/bakhod1r/guard"
 	accessdomain "github.com/bakhod1r/guard/access/domain"
 	accessinfra "github.com/bakhod1r/guard/access/infrastructure"
+	apikeyinfra "github.com/bakhod1r/guard/apikey/infrastructure"
 	"github.com/bakhod1r/guard/audit"
 	identityinfra "github.com/bakhod1r/guard/identity/infrastructure"
+	"github.com/bakhod1r/guard/ratelimit"
 	sessioninfra "github.com/bakhod1r/guard/session/infrastructure"
 )
 
@@ -25,6 +27,8 @@ func New(rdb redis.UniversalClient, cfg guard.Config) *guard.Guard {
 		Roles:    store,
 		Policies: store,
 		Audit:    &audit.Memory{},
+		APIKeys:  apikeyinfra.NewMemory(),
+		Limiter:  ratelimit.NewRedis(rdb, "guardtest:"),
 	}, cfg)
 	Seed(context.Background(), store)
 	return g
@@ -35,7 +39,7 @@ func Seed(ctx context.Context, store *accessinfra.Memory) {
 	_ = store.CreateRole(ctx, &accessdomain.Role{Name: "admin", Title: "Administrator", IsSystem: true, Wildcard: true})
 	_ = store.CreateRole(ctx, &accessdomain.Role{Name: "user", Title: "User", IsSystem: true})
 	for _, code := range []string{"user.read", "user.write", "role.read", "role.write", "role.assign",
-		"permission.read", "permission.write", "policy.read", "policy.write", "session.read", "session.revoke", "audit.read"} {
+		"permission.read", "permission.write", "policy.read", "policy.write", "session.read", "session.revoke", "audit.read", "apikey.read", "apikey.revoke"} {
 		p, _ := accessdomain.ParsePermission(code)
 		_ = store.CreatePermission(ctx, p)
 	}

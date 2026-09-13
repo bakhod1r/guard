@@ -9,7 +9,7 @@ import (
 func TestWriteDoesNotOverwrite(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "db", "guard")
 	written, err := Write(dir)
-	if err != nil || len(written) != 2 {
+	if err != nil || len(written) != 3 {
 		t.Fatalf("first write: %v %v", written, err)
 	}
 	custom := filepath.Join(dir, "00001_guard_init.sql")
