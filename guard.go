@@ -8,6 +8,7 @@ package guard
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -97,7 +98,15 @@ type Config struct {
 	// floor make New fail. nil uses secure defaults. Legacy bcrypt hashes are
 	// always verified and upgraded on login.
 	PasswordHashParams *PasswordHashParams
+	// AuditEmailKey (>= 32 random bytes, keep secret) makes login audit events
+	// store "email_hmac" (hex HMAC-SHA256, first 16 bytes) instead of the
+	// unkeyed "email_sha256" fingerprint, which is brute-forceable from a list
+	// of known addresses. Raw emails are never stored in audit metadata.
+	AuditEmailKey []byte
 }
+
+// minAuditEmailKeyLen is the HMAC-SHA256 key floor for Config.AuditEmailKey.
+const minAuditEmailKeyLen = 32
 
 // PasswordHashParams are argon2id parameters (Memory in KiB).
 type PasswordHashParams struct {
@@ -159,11 +168,16 @@ type Guard struct {
 	cachePrefix string
 	userTable   string
 	userColumn  string
+	// auditEmailKey is a private copy of Config.AuditEmailKey.
+	auditEmailKey []byte
 }
 
 func New(cfg Config) (*Guard, error) {
 	if cfg.DB == nil || cfg.Redis == nil {
 		return nil, errors.New("guard: Config.DB and Config.Redis are required")
+	}
+	if len(cfg.AuditEmailKey) > 0 && len(cfg.AuditEmailKey) < minAuditEmailKeyLen {
+		return nil, fmt.Errorf("guard: Config.AuditEmailKey must be at least %d bytes", minAuditEmailKeyLen)
 	}
 	hasher, err := passwordHasher(cfg.PasswordHashParams)
 	if err != nil {
@@ -247,17 +261,18 @@ func Build(r Repositories, cfg Config) *Guard {
 		r.Audit = asyncAudit
 	}
 	return &Guard{
-		logger:      cfg.Logger,
-		asyncAudit:  asyncAudit,
-		userTable:   cfg.UserTable,
-		userColumn:  cfg.UserIDColumn,
-		Identity:    identityapp.NewService(r.Users, r.Hasher, cfg.Lockout),
-		Sessions:    sessionapp.NewService(r.Sessions, cfg.Session),
-		Access:      accessapp.NewService(r.Roles, r.Policies),
-		APIKeys:     apikeyapp.NewService(r.APIKeys),
-		Audit:       r.Audit,
-		Limiter:     r.Limiter,
-		defaultRole: cfg.DefaultRole,
+		logger:        cfg.Logger,
+		asyncAudit:    asyncAudit,
+		userTable:     cfg.UserTable,
+		userColumn:    cfg.UserIDColumn,
+		auditEmailKey: append([]byte(nil), cfg.AuditEmailKey...),
+		Identity:      identityapp.NewService(r.Users, r.Hasher, cfg.Lockout),
+		Sessions:      sessionapp.NewService(r.Sessions, cfg.Session),
+		Access:        accessapp.NewService(r.Roles, r.Policies),
+		APIKeys:       apikeyapp.NewService(r.APIKeys),
+		Audit:         r.Audit,
+		Limiter:       r.Limiter,
+		defaultRole:   cfg.DefaultRole,
 	}
 }
 
@@ -414,6 +429,19 @@ func emailFingerprint(email string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
+// auditEmail adds a non-reversible email identifier to login audit metadata:
+// keyed "email_hmac" when Config.AuditEmailKey is set, else "email_sha256".
+func (g *Guard) auditEmail(email string, md map[string]any) map[string]any {
+	if len(g.auditEmailKey) == 0 {
+		md["email_sha256"] = emailFingerprint(email)
+		return md
+	}
+	mac := hmac.New(sha256.New, g.auditEmailKey)
+	mac.Write([]byte(strings.ToLower(strings.TrimSpace(email))))
+	md["email_hmac"] = hex.EncodeToString(mac.Sum(nil)[:16])
+	return md
+}
+
 // CreateAccount gives an existing host user (userID from UserTable) login
 // credentials, assigns DefaultRole and records an audit event.
 func (g *Guard) CreateAccount(ctx context.Context, userID, email, password string, attrs map[string]any, meta RequestMeta) (*User, error) {
@@ -452,7 +480,7 @@ func (g *Guard) Login(ctx context.Context, email, password string, meta RequestM
 	u, err := g.Identity.Authenticate(ctx, email, password)
 	if err != nil {
 		g.record(ctx, audit.Event{Action: "auth.login", Success: false, IP: meta.IP, UserAgent: meta.UserAgent,
-			Metadata: map[string]any{"email": email, "error": err.Error()}})
+			Metadata: g.auditEmail(email, map[string]any{"error": err.Error()})})
 		g.logger.InfoContext(ctx, "guard: login failed", "email_sha256", emailFingerprint(email), "ip", meta.IP, "error", err.Error())
 		return nil, err
 	}
@@ -460,7 +488,8 @@ func (g *Guard) Login(ctx context.Context, email, password string, meta RequestM
 	if err != nil {
 		return nil, err
 	}
-	g.record(ctx, audit.Event{ActorID: string(u.ID), Action: "auth.login", Target: string(u.ID), Success: true, IP: meta.IP, UserAgent: meta.UserAgent})
+	g.record(ctx, audit.Event{ActorID: string(u.ID), Action: "auth.login", Target: string(u.ID), Success: true, IP: meta.IP, UserAgent: meta.UserAgent,
+		Metadata: g.auditEmail(email, map[string]any{})})
 	return &LoginResult{User: u, Session: s, Token: tok}, nil
 }
 

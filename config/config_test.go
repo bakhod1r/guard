@@ -27,7 +27,7 @@ user_id_column: id
 default_role: member
 session: { idle: 30m, absolute: 168h, max_per_user: 3 }
 lockout: { attempts: 5, window: 15m }
-audit: { async_buffer: 64, redis_buffer: { enabled: true, batch_size: 200, interval: 2s } }
+audit: { async_buffer: 64, email_key: "${T_AUDIT_KEY}", redis_buffer: { enabled: true, batch_size: 200, interval: 2s } }
 access_cache: { enabled: true, ttl: 10s, max_entries: 500 }
 migrations: { dir: ./migrations/guard, auto_apply: true }
 http:
@@ -47,6 +47,7 @@ func setEnv(t *testing.T) {
 	t.Setenv("T_DB", "postgres://u:p@h/db")
 	t.Setenv("T_REDIS", "localhost:6379")
 	t.Setenv("T_PW", "secret")
+	t.Setenv("T_AUDIT_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=") // base64 of 32 x "A"
 }
 
 func TestParseFull(t *testing.T) {
@@ -66,6 +67,9 @@ func TestParseFull(t *testing.T) {
 	}
 	if !c.AuditBuffer.Enabled || c.AuditBuffer.BatchSize != 200 || c.AuditBuffer.Interval != 2*time.Second {
 		t.Fatalf("audit buffer: %+v", c.AuditBuffer)
+	}
+	if string(c.AuditEmailKey) != strings.Repeat("A", 32) {
+		t.Fatalf("audit email key: %q", c.AuditEmailKey)
 	}
 	if c.AccessCache == nil || c.AccessCache.TTL != 10*time.Second || c.AccessCache.MaxEntries != 500 {
 		t.Fatalf("access cache: %+v", c.AccessCache)
@@ -91,7 +95,7 @@ func TestParseMinimalDefaults(t *testing.T) {
 		t.Fatal("autoseed should be disabled")
 	}
 	if (f.HTTPOptions().AuthRateLimit != ratelimit.Rule{}) || f.guardConfig().Session != (guard.SessionPolicy{}) ||
-		f.guardConfig().AccessCache != nil || f.guardConfig().AuditBuffer.Enabled {
+		f.guardConfig().AccessCache != nil || f.guardConfig().AuditEmailKey != nil || f.guardConfig().AuditBuffer.Enabled {
 		t.Fatal("zero values expected so library defaults apply")
 	}
 }
@@ -122,6 +126,8 @@ func TestParseErrors(t *testing.T) {
 		"neg interval":     base + "audit: {redis_buffer: {interval: -1s}}\n",
 		"neg cache ttl":    base + "access_cache: {ttl: -1s}\n",
 		"neg cache max":    base + "access_cache: {max_entries: -1}\n",
+		"email key b64":    base + "audit: {email_key: \"not base64!\"}\n",
+		"email key short":  base + "audit: {email_key: QUFBQQ==}\n",
 		"not yaml":         "::: [",
 	}
 	for name, in := range cases {

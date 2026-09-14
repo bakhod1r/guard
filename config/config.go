@@ -12,6 +12,7 @@ package config
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"regexp"
@@ -66,6 +67,9 @@ type File struct {
 	} `yaml:"lockout"`
 	Audit struct {
 		AsyncBuffer int `yaml:"async_buffer"`
+		// EmailKey is a base64 (std) key of >= 32 bytes, e.g. "${GUARD_AUDIT_EMAIL_KEY}".
+		// Set: login audit stores keyed "email_hmac"; empty: "email_sha256".
+		EmailKey string `yaml:"email_key"`
 		// RedisBuffer queues events in Redis and batch-writes them; overrides async_buffer.
 		RedisBuffer struct {
 			Enabled   bool     `yaml:"enabled"`
@@ -147,6 +151,9 @@ func (f *File) Validate() error {
 	case f.HTTP.AuthRateLimit.Limit < -1:
 		return fmt.Errorf("config: http.auth_rate_limit.limit must be >= -1")
 	}
+	if _, err := f.auditEmailKey(); err != nil {
+		return err
+	}
 	nonNeg := []struct {
 		name string
 		v    int64
@@ -173,6 +180,21 @@ func (f *File) Validate() error {
 	return nil
 }
 
+// auditEmailKey decodes audit.email_key; empty means no key.
+func (f *File) auditEmailKey() ([]byte, error) {
+	if f.Audit.EmailKey == "" {
+		return nil, nil
+	}
+	k, err := base64.StdEncoding.DecodeString(f.Audit.EmailKey)
+	if err != nil {
+		return nil, fmt.Errorf("config: audit.email_key must be base64: %w", err)
+	}
+	if len(k) < 32 {
+		return nil, fmt.Errorf("config: audit.email_key must decode to at least 32 bytes, got %d", len(k))
+	}
+	return k, nil
+}
+
 func (f *File) guardConfig() guard.Config {
 	c := guard.Config{
 		RedisPrefix: f.Redis.Prefix,
@@ -189,6 +211,7 @@ func (f *File) guardConfig() guard.Config {
 		AuditBuffer: guard.AuditBuffer{Enabled: f.Audit.RedisBuffer.Enabled, BatchSize: f.Audit.RedisBuffer.BatchSize,
 			Interval: time.Duration(f.Audit.RedisBuffer.Interval)},
 	}
+	c.AuditEmailKey, _ = f.auditEmailKey() // validated in Parse
 	if f.AccessCache.Enabled {
 		c.AccessCache = &guard.AccessCacheOptions{TTL: time.Duration(f.AccessCache.TTL), MaxEntries: f.AccessCache.MaxEntries}
 	}

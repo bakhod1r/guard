@@ -3,10 +3,12 @@ package guard
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -308,7 +310,7 @@ func TestLogin(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 		last := f.audit.Events[len(f.audit.Events)-1]
-		if last.Success || last.Action != "auth.login" || last.IP != "9.9.9.9" || last.Metadata["email"] != "1@example.com" {
+		if last.Success || last.Action != "auth.login" || last.IP != "9.9.9.9" || last.Metadata["email_sha256"] != emailFingerprint("1@example.com") {
 			t.Fatalf("audit = %+v", last)
 		}
 	})
@@ -1064,4 +1066,57 @@ func embeddedMigrationCount(t *testing.T, ref migrations.UserRef) int {
 		t.Fatalf("embedded migrations: %v", names)
 	}
 	return len(names)
+}
+
+func TestNewRejectsShortAuditEmailKey(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:1"})
+	defer rdb.Close()
+	g, err := New(Config{DB: &pgxpool.Pool{}, Redis: rdb, AuditEmailKey: make([]byte, 31)})
+	if err == nil || g != nil || !strings.Contains(err.Error(), "AuditEmailKey") {
+		t.Fatalf("New = %v, %v; want AuditEmailKey error", g, err)
+	}
+}
+
+func TestLoginAuditNeverStoresRawEmail(t *testing.T) {
+	ctx := context.Background()
+	key := bytes.Repeat([]byte{7}, 32)
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("1@example.com"))
+	wantHMAC := hex.EncodeToString(mac.Sum(nil)[:16])
+	sum := sha256.Sum256([]byte("1@example.com"))
+	wantSHA := hex.EncodeToString(sum[:])[:16]
+	for name, tc := range map[string]struct {
+		key       []byte
+		field     string
+		want, not string
+	}{
+		"with key":    {key, "email_hmac", wantHMAC, "email_sha256"},
+		"without key": {nil, "email_sha256", wantSHA, "email_hmac"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, Config{AuditEmailKey: tc.key})
+			f.account(t, "1")
+			if _, err := f.g.Login(ctx, " 1@Example.com", "wrong password", RequestMeta{}); err == nil {
+				t.Fatal("want error")
+			}
+			f.login(t, "1")
+			events := f.audit.Events[len(f.audit.Events)-2:]
+			for _, e := range events {
+				if e.Action != "auth.login" || e.Metadata[tc.field] != tc.want {
+					t.Fatalf("audit = %+v; want %s=%s", e, tc.field, tc.want)
+				}
+				if _, ok := e.Metadata[tc.not]; ok {
+					t.Fatalf("unexpected %s in %+v", tc.not, e.Metadata)
+				}
+				for k, v := range e.Metadata {
+					if k == "email" || strings.Contains(strings.ToLower(fmt.Sprint(v)), "example.com") {
+						t.Fatalf("raw email leaked in audit metadata: %+v", e.Metadata)
+					}
+				}
+			}
+			if events[0].Success || !events[1].Success {
+				t.Fatalf("success flags: %+v", events)
+			}
+		})
+	}
 }
