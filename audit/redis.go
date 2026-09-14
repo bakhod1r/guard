@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +35,9 @@ const (
 	defaultBufferBatch    = 500
 	defaultBufferInterval = time.Second
 	bufferLockTTL         = 30 * time.Second
+	// bufferPushTimeout caps request latency when Redis is slow or down;
+	// Record then falls back to a direct write.
+	bufferPushTimeout = 250 * time.Millisecond
 )
 
 // RedisBuffer queues events in a Redis list and writes them to next in
@@ -104,7 +108,10 @@ func (b *RedisBuffer) Record(ctx context.Context, e Event) error {
 	if !b.closed {
 		raw, err := json.Marshal(e)
 		if err == nil {
-			if err = b.rdb.RPush(ctx, b.queue, raw).Err(); err == nil {
+			c, cancel := context.WithTimeout(ctx, bufferPushTimeout)
+			err = b.rdb.RPush(c, b.queue, raw).Err()
+			cancel()
+			if err == nil {
 				return nil
 			}
 		}
@@ -158,7 +165,7 @@ func (b *RedisBuffer) Flush(ctx context.Context) (int, error) {
 		var dead []any
 		for _, raw := range raws {
 			var e Event
-			if json.Unmarshal([]byte(raw), &e) != nil {
+			if decodeEvent(raw, &e) != nil {
 				dead = append(dead, raw)
 				continue
 			}
@@ -234,4 +241,12 @@ func (b *RedisBuffer) Close(ctx context.Context) error {
 	}
 	_, err := b.Flush(ctx)
 	return err
+}
+
+// decodeEvent keeps metadata numbers as json.Number so large integers keep
+// their precision on the way to storage.
+func decodeEvent(raw string, e *Event) error {
+	d := json.NewDecoder(strings.NewReader(raw))
+	d.UseNumber()
+	return d.Decode(e)
 }

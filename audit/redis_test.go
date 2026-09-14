@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -333,5 +334,29 @@ func TestRedisBufferTrimFailsAfterWrite(t *testing.T) {
 	defer mr.SetError("")
 	if _, err := b.Flush(ctx); err == nil {
 		t.Fatal("want trim error")
+	}
+}
+
+func TestRedisBufferTrimScriptError(t *testing.T) {
+	ctx := context.Background()
+	b, mr := newBuffer(t, &Memory{}, RedisBufferConfig{Interval: time.Hour})
+	_ = mr.Set("guard:{audit}:dead", "not a list")
+	mr.RPush("guard:{audit}:queue", "x")
+	if _, err := b.Flush(ctx); err == nil {
+		t.Fatal("want WRONGTYPE error from trim script")
+	}
+}
+
+func TestRedisBufferKeepsLargeIntegerMetadata(t *testing.T) {
+	ctx := context.Background()
+	mem := &Memory{}
+	b, _ := newBuffer(t, mem, RedisBufferConfig{Interval: time.Hour})
+	_ = b.Record(ctx, Event{Action: "a", Metadata: map[string]any{"n": int64(1<<62 + 1)}})
+	if _, err := b.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(mem.Events[0].Metadata["n"])
+	if string(raw) != "4611686018427387905" {
+		t.Fatalf("metadata n = %s", raw)
 	}
 }
