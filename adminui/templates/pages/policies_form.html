@@ -1,0 +1,32 @@
+{{define "content"}}{{$d := .Data}}
+<div class="bar"><h1>{{.Title}}</h1><a class="btn" href="{{.Base}}/policies">Back to policies</a></div>
+{{if $d.Error}}<div class="flash err" role="alert">{{$d.Error}}</div>{{end}}
+{{if not $d.CanWrite}}<p class="mute">Read-only: you need policy.write to change policies.</p>{{end}}
+<form method="post" action="{{.Base}}/policies{{if $d.ID}}/{{$d.ID}}{{end}}">
+<input type="hidden" name="_csrf" value="{{.CSRF}}">
+<fieldset {{if not $d.CanWrite}}disabled {{end}}class="bare">
+<div class="card">
+<div class="grid">
+<div class="field"><label for="p-name">Name</label><input id="p-name" name="name" value="{{$d.Name}}" required></div>
+<div class="field"><label for="p-res">Resource (name or *)</label><input id="p-res" name="resource" value="{{$d.Resource}}" required></div>
+<div class="field"><label for="p-act">Action (name or *)</label><input id="p-act" name="action" value="{{$d.Action}}" required></div>
+<div class="field"><label for="p-eff">Effect</label><select id="p-eff" name="effect">
+<option value="allow"{{if eq $d.Effect "allow"}} selected{{end}}>allow</option>
+<option value="deny"{{if eq $d.Effect "deny"}} selected{{end}}>deny</option></select></div>
+<div class="field"><label for="p-prio">Priority (lower wins)</label><input id="p-prio" name="priority" type="number" value="{{$d.Priority}}"></div>
+<div class="field"><label for="p-en" class="check"><input id="p-en" class="auto" type="checkbox" name="enabled"{{if $d.Enabled}} checked{{end}}> Enabled</label></div>
+</div>
+<div class="field"><label for="p-root">Condition tree (JSON; empty = always matches)</label>
+<textarea id="p-root" name="root" rows="14" spellcheck="false" aria-describedby="p-help">{{$d.Root}}</textarea></div>
+{{if $d.CanWrite}}<div class="row"><button class="btn primary">Save policy</button><button type="button" class="btn" id="p-fmt">Format JSON</button><span id="p-fmt-err" class="mute" role="status"></span></div>{{end}}
+</div>
+</fieldset>
+</form>
+<div class="card" id="p-help">
+<h2 class="mt0">Condition help</h2>
+<p class="mute">A group has <span class="mono">operator</span> (and/or), <span class="mono">negate</span>, <span class="mono">conditions</span> and nested <span class="mono">groups</span> (max depth 8). A value starting with <span class="mono">$</span> references another attribute, e.g. <span class="mono">$user.id</span>.</p>
+<p><b>Fields</b></p><ul>{{range $d.Fields}}<li class="mono">{{.}}</li>{{end}}</ul>
+<p><b>Operators</b> {{range $d.Operators}}<span class="badge mono">{{.}}</span>{{end}} — <span class="mono">in</span>/<span class="mono">not_in</span> take several values, others exactly one.</p>
+<p><b>Example</b></p><pre class="mono">{{$d.Example}}</pre>
+</div>
+{{end}}

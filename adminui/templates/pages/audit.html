@@ -1,0 +1,34 @@
+{{define "content"}}
+<div class="bar"><h1>Audit log</h1></div>
+<form method="get" action="{{.Base}}/audit" class="card row">
+  <div><label for="actor_id">Actor ID</label><input id="actor_id" name="actor_id" value="{{.Data.ActorID}}"></div>
+  <div><label for="limit">Limit (max 500)</label><input id="limit" name="limit" type="number" min="1" max="500" value="{{.Data.Limit}}"></div>
+  <button class="btn primary">Filter</button>
+</form>
+{{if not .Data.Configured}}
+<div class="card empty">audit log not configured</div>
+{{else if .Data.Err}}
+<div class="flash err" role="alert">{{.Data.Err}}</div>
+{{else if not .Data.Rows}}
+<div class="card empty">No audit events match this filter.</div>
+{{else}}
+<div class="card scroll">
+<table>
+  <thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Result</th><th scope="col">IP</th><th scope="col">Metadata</th></tr></thead>
+  <tbody>
+  {{range .Data.Rows}}
+  <tr data-event>
+    <td>{{time .Event.OccurredAt}}</td>
+    <td class="mono" title="{{.Event.ActorID}}">{{if .Event.ActorID}}<a href="?actor_id={{.Event.ActorID}}">{{short .Event.ActorID}}</a>{{else}}—{{end}}</td>
+    <td class="mono">{{.Event.Action}}</td>
+    <td class="mono">{{.Event.Target}}</td>
+    <td>{{if .Event.Success}}<span class="badge ok">success</span>{{else}}<span class="badge bad">failed</span>{{end}}</td>
+    <td class="mono">{{.Event.IP}}</td>
+    <td class="mono">{{range .Metadata}}<div>{{.}}</div>{{end}}</td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+</div>
+{{end}}
+{{end}}

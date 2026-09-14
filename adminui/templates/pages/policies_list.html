@@ -1,0 +1,49 @@
+{{define "content"}}{{$d := .Data}}
+<div class="bar"><h1>Policies</h1>{{if $d.CanWrite}}<a class="btn primary" href="{{.Base}}/policies/new">New policy</a>{{end}}</div>
+<div class="card scroll">
+{{if $d.Policies}}
+<table>
+<caption class="mute left">Evaluated by priority (lower wins); deny overrides allow within a tier.</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Target</th><th scope="col">Effect</th><th scope="col">Priority</th><th scope="col">Enabled</th><th scope="col">Conditions</th><th scope="col"><span class="mute">Actions</span></th></tr></thead>
+<tbody>
+{{range $d.Policies}}
+<tr>
+<td><a href="{{$.Base}}/policies/{{.ID}}">{{.Name}}</a></td>
+<td class="mono">{{.Resource}}.{{.Action}}</td>
+<td>{{if eq .Effect "deny"}}<span class="badge bad">deny</span>{{else}}<span class="badge ok">allow</span>{{end}}</td>
+<td>{{.Priority}}</td>
+<td>{{if .Enabled}}<span class="badge ok">on</span>{{else}}<span class="badge">off</span>{{end}}</td>
+<td class="mono">{{.Summary}}</td>
+<td class="nowrap">{{if $d.CanWrite}}
+<form class="inline" method="post" action="{{$.Base}}/policies/{{.ID}}/toggle"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form>
+<form class="inline" method="post" action="{{$.Base}}/policies/{{.ID}}/delete" data-confirm="Delete this policy?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Delete</button></form>
+{{end}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{else}}<div class="empty">No policies yet. Without policies, RBAC permissions decide.</div>{{end}}
+</div>
+
+<h2 id="try">Try it</h2>
+<div class="card">
+{{with $d.Sim}}
+{{if .Error}}<div class="flash err" role="alert">{{.Error}}</div>{{end}}
+{{if .Done}}<div class="flash{{if not .Allowed}} err{{end}}" role="status"><b>{{if .Allowed}}Allowed{{else}}Denied{{end}}</b> — {{.Reason}}</div>{{end}}
+<form method="post" action="{{$.Base}}/policies/simulate#try">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}">
+<div class="grid">
+<div class="field"><label for="sim-user">User ID</label><input id="sim-user" name="user_id" value="{{.UserID}}" required></div>
+<div class="field"><label for="sim-action">Action</label><input id="sim-action" name="action" value="{{.Action}}" placeholder="read" required></div>
+<div class="field"><label for="sim-type">Resource type</label><input id="sim-type" name="resource_type" value="{{.ResourceType}}" placeholder="report" required></div>
+<div class="field"><label for="sim-id">Resource ID</label><input id="sim-id" name="resource_id" value="{{.ResourceID}}"></div>
+</div>
+<div class="grid">
+<div class="field"><label for="sim-attrs">Resource attributes (JSON object)</label><textarea id="sim-attrs" name="resource_attributes" class="short" placeholder='{"owner_id":"42"}'>{{.Attributes}}</textarea></div>
+<div class="field"><label for="sim-env">Environment (JSON object)</label><textarea id="sim-env" name="env" class="short" placeholder='{"ip":"10.0.0.1"}'>{{.Env}}</textarea></div>
+</div>
+<button class="btn primary">Evaluate</button>
+</form>
+{{end}}
+</div>
+{{end}}

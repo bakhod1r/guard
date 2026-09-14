@@ -1,0 +1,25 @@
+-- +goose Up
+-- =============================================================
+-- Route registry for ginguard.SyncRoutes / Guard.SyncRoutes. One row per
+-- host HTTP route ("METHOD path"). Routes the host no longer registers are
+-- flagged stale, never deleted; permissions are never removed by a sync.
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS guard_route (
+    method        VARCHAR(16)  NOT NULL,
+    path          VARCHAR(512) NOT NULL,
+    permission    VARCHAR(129) NOT NULL,
+    stale         BOOLEAN      NOT NULL DEFAULT FALSE,
+    first_seen_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    PRIMARY KEY (method, path),
+
+    CONSTRAINT guard_route_method_upper CHECK (method = upper(method) AND method <> ''),
+    CONSTRAINT guard_route_permission_format CHECK (permission ~ '^[a-z0-9_-]{1,64}\.[a-z0-9_-]{1,64}$')
+);
+
+CREATE INDEX IF NOT EXISTS guard_idx_route_stale ON guard_route (stale, last_seen_at);
+
+
+-- +goose Down
+DROP TABLE IF EXISTS guard_route;

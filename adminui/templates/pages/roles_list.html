@@ -1,0 +1,38 @@
+{{define "content"}}
+<div class="bar"><h1>Roles</h1></div>
+<div class="card scroll">
+{{if .Data.Roles}}
+<table>
+<thead><tr><th scope="col">Name</th><th scope="col">Title</th><th scope="col">Flags</th><th scope="col">Permissions</th><th scope="col">Count</th></tr></thead>
+<tbody>
+{{range .Data.Roles}}
+<tr>
+<td class="mono"><a href="{{$.Base}}/roles/{{.Name}}">{{.Name}}</a></td>
+<td>{{.Title}}</td>
+<td>{{if .IsSystem}}<span class="badge">system</span>{{end}}{{if .Wildcard}}<span class="badge bad">wildcard</span>{{end}}</td>
+<td>{{range .Permissions}}<span class="badge mono">{{.Code}}</span>{{else}}<span class="mute">—</span>{{end}}</td>
+<td>{{len .Permissions}}</td>
+</tr>
+{{end}}
+</tbody>
+</table>
+{{else}}
+<div class="empty">No roles yet.</div>
+{{end}}
+</div>
+{{if .Data.CanWrite}}
+<div class="card">
+<h2>New role</h2>
+<form method="post" action="{{.Base}}/roles">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}">
+<div class="grid">
+<div class="field"><label for="role-name">Name</label><input id="role-name" name="name" required pattern="[a-z0-9_\-]{2,64}" placeholder="editor" autocomplete="off"></div>
+<div class="field"><label for="role-title">Title</label><input id="role-title" name="title" placeholder="Editor"></div>
+<div class="field"><label for="role-desc">Description</label><input id="role-desc" name="description"></div>
+</div>
+<p><label><input type="checkbox" name="wildcard" value="on" class="auto"> Wildcard (passes every permission check)</label></p>
+<button class="btn primary" type="submit">Create role</button>
+</form>
+</div>
+{{end}}
+{{end}}

@@ -1,0 +1,21 @@
+{{define "content"}}
+<div class="bar"><h1>Routes</h1></div>
+<div class="card scroll">
+{{if .Data.NoRegistry}}
+<div class="empty">The route registry needs a PostgreSQL-backed Guard.</div>
+{{else if .Data.Routes}}
+<p class="mute">{{.Data.Active}} active, {{.Data.Stale}} stale. Stale routes are no longer registered by the application; their permissions are kept.</p>
+<table>
+<thead><tr><th scope="col">Method</th><th scope="col">Path</th><th scope="col">Permission</th><th scope="col">Status</th><th scope="col">Last seen</th></tr></thead>
+<tbody>
+{{range .Data.Routes}}
+<tr><td class="mono">{{.Method}}</td><td class="mono">{{.Path}}</td><td><span class="badge mono">{{.Permission}}</span></td>
+<td>{{if .Stale}}<span class="badge bad">stale</span>{{else}}<span class="badge">active</span>{{end}}</td><td>{{time .SeenAt}}</td></tr>
+{{end}}
+</tbody>
+</table>
+{{else}}
+<div class="empty">No routes synced yet. Call ginguard.SyncRoutes at startup.</div>
+{{end}}
+</div>
+{{end}}

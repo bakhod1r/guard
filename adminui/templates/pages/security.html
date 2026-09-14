@@ -1,0 +1,68 @@
+{{define "content"}}
+<div class="bar"><h1>My sessions &amp; API keys</h1></div>
+
+<div class="card">
+  <div class="bar"><h2 class="m0">Sessions</h2>
+    <form method="post" action="{{$.Base}}/security/sessions/revoke-others" class="inline" data-confirm="Sign out all other sessions?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Sign out other sessions</button></form>
+  </div>
+  {{if .Data.Sessions}}
+  <div class="scroll"><table>
+    <thead><tr><th>Created</th><th>Last seen</th><th>Expires</th><th>IP</th><th>User agent</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Sessions}}
+    <tr>
+      <td>{{time .CreatedAt}}</td><td>{{time .LastSeenAt}}</td><td>{{time .ExpiresAt}}</td>
+      <td class="mono">{{.IP}}</td><td class="mute">{{.UserAgent}}</td>
+      <td>{{if .Current}}<span class="badge ok">current</span>{{else}}<form method="post" action="{{$.Base}}/security/sessions/{{.ID}}/revoke" class="inline" data-confirm="Revoke this session?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke</button></form>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}<div class="empty">No active sessions.</div>{{end}}
+</div>
+
+<div class="card">
+  <h2 class="mt0">API keys</h2>
+  {{if .Data.Keys}}
+  <div class="scroll"><table>
+    <thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Created</th><th>Last used</th><th>Expires</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {{range .Data.Keys}}
+    <tr>
+      <td>{{.Name}}</td><td class="mono">{{.Prefix}}</td>
+      <td>{{range .Scopes}}<span class="badge">{{.}}</span>{{end}}</td>
+      <td>{{time .CreatedAt}}</td><td>{{time .LastUsedAt}}</td><td>{{time .ExpiresAt}}</td>
+      <td>{{if eq .Status "active"}}<span class="badge ok">active</span>{{else}}<span class="badge bad">{{.Status}}</span>{{end}}</td>
+      <td>{{if eq .Status "active"}}<form method="post" action="{{$.Base}}/security/api-keys/{{.ID}}/revoke" class="inline" data-confirm="Revoke this API key? Clients using it stop working."><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke</button></form>{{end}}</td>
+    </tr>
+    {{end}}
+    </tbody>
+  </table></div>
+  {{else}}<div class="empty">No API keys yet.</div>{{end}}
+
+  <h2>Issue a key</h2>
+  <form method="post" action="{{$.Base}}/security/api-keys">
+    <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+    <div class="grid">
+      <div class="field"><label for="k-name">Name</label><input id="k-name" name="name" required maxlength="100"></div>
+      <div class="field"><label for="k-exp">Expires (optional, local time)</label><input id="k-exp" type="datetime-local" name="expires_at"></div>
+    </div>
+    <div class="field"><label for="k-scopes">Scopes (one per line or comma separated, e.g. user.read, role.*)</label><textarea id="k-scopes" name="scopes" required class="short"></textarea></div>
+    <button class="btn primary">Issue key</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="mt0">Change password</h2>
+  <form method="post" action="{{$.Base}}/security/password" autocomplete="off">
+    <input type="hidden" name="_csrf" value="{{$.CSRF}}">
+    <div class="grid">
+      <div class="field"><label for="pw-old">Current password</label><input id="pw-old" type="password" name="old_password" required autocomplete="current-password"></div>
+      <div class="field"><label for="pw-new">New password</label><input id="pw-new" type="password" name="new_password" required minlength="8" maxlength="128" autocomplete="new-password"></div>
+      <div class="field"><label for="pw-confirm">Confirm new password</label><input id="pw-confirm" type="password" name="confirm_password" required minlength="8" maxlength="128" autocomplete="new-password"></div>
+    </div>
+    <p class="mute">Changing your password signs out all your other sessions.</p>
+    <button class="btn primary">Change password</button>
+  </form>
+</div>
+{{end}}

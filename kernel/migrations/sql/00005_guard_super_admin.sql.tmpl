@@ -1,0 +1,15 @@
+-- +goose Up
+-- =============================================================
+-- super_admin: system wildcard role. Only its holders may grant or revoke
+-- admin / super_admin, and Guard refuses to remove or block the last holder.
+-- ABAC deny policies (e.g. "blocked user denied") still apply to it.
+-- Existing admins are NOT promoted; bootstrap one with Guard.EnsureSuperAdmin.
+-- =============================================================
+
+INSERT INTO guard_role (name, title, description, is_system, wildcard)
+VALUES ('super_admin', 'Super administrator', 'Full access; manages admin and super_admin grants', TRUE, TRUE)
+ON CONFLICT (name) DO NOTHING;
+
+
+-- +goose Down
+DELETE FROM guard_role WHERE name = 'super_admin';

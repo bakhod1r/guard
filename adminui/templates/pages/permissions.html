@@ -1,0 +1,31 @@
+{{define "content"}}
+<div class="bar"><h1>Permissions</h1></div>
+<div class="card scroll">
+{{if .Data.Permissions}}
+<table>
+<thead><tr><th scope="col">Code</th><th scope="col">Description</th><th scope="col">Roles</th></tr></thead>
+<tbody>
+{{range .Data.Permissions}}
+<tr><td class="mono">{{.Code}}</td><td>{{if .Description}}{{.Description}}{{else}}<span class="mute">—</span>{{end}}</td>
+<td>{{range .Roles}}<a class="badge mono" href="{{$.Base}}/roles/{{.}}">{{.}}</a>{{else}}<span class="mute">No role</span>{{end}}</td></tr>
+{{end}}
+</tbody>
+</table>
+{{else}}
+<div class="empty">No permissions yet.</div>
+{{end}}
+</div>
+{{if .Data.CanWrite}}
+<div class="card">
+<h2>New permission</h2>
+<form method="post" action="{{.Base}}/permissions">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}">
+<div class="grid">
+<div class="field"><label for="perm-code">Code (resource.action)</label><input id="perm-code" name="code" required pattern="[a-z0-9_\-]{1,64}\.[a-z0-9_\-]{1,64}" placeholder="report.export" autocomplete="off"></div>
+<div class="field"><label for="perm-desc">Description</label><input id="perm-desc" name="description"></div>
+</div>
+<p><button class="btn primary" type="submit">Create permission</button></p>
+</form>
+</div>
+{{end}}
+{{end}}

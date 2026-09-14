@@ -1,0 +1,53 @@
+{{define "content"}}
+{{$role := .Data.Role}}
+<div class="bar"><h1>Role <span class="mono">{{$role.Name}}</span></h1><a class="btn" href="{{.Base}}/roles">All roles</a></div>
+<div class="card">
+<div class="grid">
+<div><div class="mute">Title</div>{{$role.Title}}</div>
+<div><div class="mute">Description</div>{{if $role.Description}}{{$role.Description}}{{else}}<span class="mute">—</span>{{end}}</div>
+<div><div class="mute">Flags</div>{{if $role.IsSystem}}<span class="badge">system</span>{{end}}{{if $role.Wildcard}}<span class="badge bad">wildcard</span>{{end}}{{if not (or $role.IsSystem $role.Wildcard)}}<span class="mute">—</span>{{end}}</div>
+</div>
+</div>
+<div class="card">
+<h2>Granted permissions</h2>
+{{if $role.Wildcard}}<p class="mute">This wildcard role passes every check; explicit grants are not needed.</p>{{end}}
+{{if $role.Permissions}}
+<div class="scroll"><table>
+<thead><tr><th scope="col">Code</th><th scope="col">Description</th>{{if .Data.CanWrite}}<th scope="col"><span class="mute">Action</span></th>{{end}}</tr></thead>
+<tbody>
+{{range $role.Permissions}}
+<tr><td class="mono">{{.Code}}</td><td>{{.Description}}</td>
+{{if $.Data.CanWrite}}<td><form class="inline" method="post" action="{{$.Base}}/roles/{{$role.Name}}/permissions/revoke" data-confirm="Revoke this permission from the role?">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="code" value="{{.Code}}">
+<button class="btn danger sm" type="submit" aria-label="Revoke {{.Code}}">Revoke</button></form></td>{{end}}</tr>
+{{end}}
+</tbody></table></div>
+{{else}}
+<div class="empty">No permissions granted.</div>
+{{end}}
+{{if and .Data.CanWrite (not $role.Wildcard)}}
+<h2>Grant permission</h2>
+{{if .Data.Grantable}}
+<form class="row" method="post" action="{{.Base}}/roles/{{$role.Name}}/permissions">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}">
+<label for="grant-code">Permission</label>
+<select id="grant-code" name="code" required>
+{{range .Data.Grantable}}<option value="{{.Code}}">{{.Code}}{{if .Description}} — {{.Description}}{{end}}</option>
+{{end}}</select>
+<button class="btn primary" type="submit">Grant</button>
+</form>
+{{else}}
+<div class="empty">No permissions exist that are not already granted.</div>
+{{end}}
+{{end}}
+</div>
+{{if and .Data.CanWrite (not $role.IsSystem)}}
+<div class="card">
+<h2>Danger zone</h2>
+<form method="post" action="{{.Base}}/roles/{{$role.Name}}/delete" data-confirm="Delete this role?">
+<input type="hidden" name="_csrf" value="{{$.CSRF}}">
+<button class="btn danger" type="submit">Delete role</button>
+</form>
+</div>
+{{end}}
+{{end}}
