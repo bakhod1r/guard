@@ -14,6 +14,7 @@ type Service struct {
 	roles    domain.RoleRepository
 	policies domain.PolicyRepository
 	now      func() time.Time
+	sa       superAdminState
 }
 
 func NewService(roles domain.RoleRepository, policies domain.PolicyRepository) *Service {
@@ -137,13 +138,7 @@ func (s *Service) AssignRole(ctx context.Context, userID, role, grantedBy string
 // UnassignRoleAs for user-initiated changes.
 func (s *Service) UnassignRole(ctx context.Context, userID, role string) error {
 	if role == domain.RoleSuperAdmin {
-		h, err := s.holders()
-		if err != nil {
-			return err
-		}
-		return h.UnassignRoleChecked(ctx, userID, role, func(holders []string) error {
-			return domain.EnsureOtherSuperAdmin(holders, userID)
-		})
+		return s.LockSuperAdmins(ctx, func(ctx context.Context) error { return s.unassignSuperAdmin(ctx, userID) })
 	}
 	return s.roles.UnassignRole(ctx, userID, role)
 }

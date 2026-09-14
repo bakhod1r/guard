@@ -149,3 +149,102 @@ func TestEnsureCanBlock(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// lockSpy records LockSuperAdmins calls on top of the memory store.
+type lockSpy struct {
+	*infrastructure.Memory
+	calls int
+	err   error
+}
+
+func (l *lockSpy) LockSuperAdmins(ctx context.Context, fn func(context.Context) error) error {
+	l.calls++
+	if l.err != nil {
+		return l.err
+	}
+	return l.Memory.LockSuperAdmins(ctx, fn)
+}
+
+func TestLockSuperAdmins(t *testing.T) {
+	ctx := context.Background()
+	spy := &lockSpy{Memory: infrastructure.NewMemory()}
+	s := NewService(spy, spy)
+	ran := false
+	if err := s.LockSuperAdmins(ctx, func(context.Context) error { ran = true; return nil }); err != nil || !ran || spy.calls != 1 {
+		t.Fatal(err, ran, spy.calls)
+	}
+	spy.err = errBoom
+	if err := s.LockSuperAdmins(ctx, func(context.Context) error { t.Error("ran"); return nil }); !errors.Is(err, errBoom) {
+		t.Fatal(err)
+	}
+	// A repository without its own lock still gets the process-wide one.
+	m := infrastructure.NewMemory()
+	p := NewService(struct{ domain.RoleRepository }{m}, m)
+	held, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_ = p.LockSuperAdmins(ctx, func(context.Context) error { close(held); <-release; return nil })
+	}()
+	<-held
+	short, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+	defer cancel()
+	if err := p.LockSuperAdmins(short, func(context.Context) error { t.Error("ran"); return nil }); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := p.LockSuperAdmins(ctx, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnassignSuperAdminCountsOnlyActive(t *testing.T) {
+	s, _ := superFixture(t)
+	ctx := context.Background()
+	_ = s.AssignRole(ctx, "bob", domain.RoleSuperAdmin, "root", nil)
+	blocked := map[string]bool{"bob": true}
+	s.SetSuperAdminBlocked(func(_ context.Context, id string) (bool, error) {
+		if id == "boom" {
+			return false, errBoom
+		}
+		return blocked[id], nil
+	})
+	// bob is banned: root is the last active super admin.
+	if err := s.UnassignRoleAs(ctx, "root", "root", domain.RoleSuperAdmin); !errors.Is(err, domain.ErrLastSuperAdmin) {
+		t.Fatal(err)
+	}
+	// Removing the banned holder does not shrink the active set.
+	if err := s.UnassignRoleAs(ctx, "root", "bob", domain.RoleSuperAdmin); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.AssignRole(ctx, "boom", domain.RoleSuperAdmin, "root", nil)
+	if err := s.UnassignRole(ctx, "root", domain.RoleSuperAdmin); !errors.Is(err, errBoom) {
+		t.Fatal(err)
+	}
+	blocked["boom"] = false
+	s.SetSuperAdminBlocked(nil) // nil: every holder counts
+	if err := s.UnassignRole(ctx, "boom", domain.RoleSuperAdmin); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnassignSuperAdminLockError(t *testing.T) {
+	spy := &lockSpy{Memory: infrastructure.NewMemory(), err: errBoom}
+	s := NewService(spy, spy)
+	if err := s.UnassignRole(context.Background(), "root", domain.RoleSuperAdmin); !errors.Is(err, errBoom) {
+		t.Fatal(err)
+	}
+	if err := s.EnsureCanBlock(context.Background(), "root", nil); err != nil {
+		t.Fatal(err) // no holders: nothing to protect
+	}
+}
+
+type holdersFail struct{ *infrastructure.Memory }
+
+func (holdersFail) RoleHolders(context.Context, string) ([]string, error) { return nil, errBoom }
+
+func TestUnassignSuperAdminHoldersError(t *testing.T) {
+	h := holdersFail{infrastructure.NewMemory()}
+	s := NewService(h, h)
+	if err := s.UnassignRole(context.Background(), "root", domain.RoleSuperAdmin); !errors.Is(err, errBoom) {
+		t.Fatal(err)
+	}
+}

@@ -162,7 +162,7 @@ res, err := ginguard.SyncRoutes(ctx, g, r.Routes(), ginguard.SyncOptions{
 })
 ```
 
-Always list Guard's own route groups (`/api/auth`, `/api/guard`, admin panel path) in `SkipPrefixes`; they are protected by `ginguard.Mount` / `adminui`. Routes are stored in `guard_route` (migration `00006`); removed routes are marked stale and existing grants are never revoked. `res` lists created, skipped and stale entries; the admin panel shows them under **Routes**.
+Routes served by Guard's own handlers (`ginguard.Mount`, `adminui.Mount`) are skipped automatically by both `SyncRoutes` and `ProtectRoutes` (detected from gin's handler name); they enforce their own checks. `SyncOptions.IncludeGuardRoutes: true` opts out. `SkipPrefixes` still excludes any other path prefix. Routes are stored in `guard_route` (migration `00006`); removed routes are marked stale and existing grants are never revoked. `res` lists created, skipped and stale entries; the admin panel shows them under **Routes**.
 
 ## Access cache
 

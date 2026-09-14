@@ -22,12 +22,15 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 - `examples/gin`: `GUARD_TRUSTED_PROXIES` (comma-separated, default: trust none) and route sync via `ginguard.SyncRoutes`.
 
 ### Changed
+- **Breaking (audit data):** `auth.login` audit metadata no longer stores the raw `email`. Failed and successful logins record `email_hmac` (hex HMAC-SHA256, first 16 bytes) when `Config.AuditEmailKey` (>= 32 bytes, else `New` fails; YAML `audit.email_key`, base64, `GUARD_AUDIT_EMAIL_KEY` in `examples/gin`) is set, otherwise `email_sha256` (same 16-hex fingerprint as logs). Queries or SIEM rules on `metadata->>'email'` must switch to the fingerprint; existing rows are not rewritten.
 - **Breaking:** Guard references the host application's existing user table (`Config.UserTable`, `Config.UserIDColumn`, id type auto-detected) instead of owning a users table (`850220f`).
 - Guard migrations run under a PostgreSQL advisory lock (`migrations.LockID`), making concurrent `Migrate` from multiple replicas safe.
 - Example compose now uses host ports 18432/18379/18080 and includes the app service with health checks.
 - **Breaking:** `Access.AssignRole` with a non-empty `grantedBy` now requires an active `super_admin` actor for roles `admin` and `super_admin`. Existing admins are not promoted: run `Guard.EnsureSuperAdmin` (or set `GUARD_SUPERADMIN_EMAIL`/`GUARD_SUPERADMIN_PASSWORD` in the example) once after upgrading, otherwise nobody can grant `admin`.
 - `SessionPolicy`: each zero field now gets its own default (previously setting only `MaxPerUser` left zero timeouts and sessions expired immediately).
 - Toolchain pinned to `go1.26.6` and `quic-go` bumped to `v0.59.1` (govulncheck clean); golangci-lint v2.13.2 config: British spellings allowed, staticcheck `QF1008`/`QF1011` disabled.
+- Route auto-discovery: `ginguard.SyncRoutes` / `ginguard.ProtectRoutes` skip routes whose final handler belongs to `ginguard` or `adminui` without needing `SkipPrefixes`; opt out with `SyncOptions.IncludeGuardRoutes`.
+- Last-super-admin rule is now race-free: `Guard.SetUserStatus` (ban/suspend) and super_admin removal (`Guard.UnassignRole`, `Access.UnassignRoleAs`, `Access.UnassignRole`) run their check and write under one lock (`Access.LockSuperAdmins`: PostgreSQL `pg_advisory_xact_lock` on a constant key with `lock_timeout` 10s plus a per-process lock; memory store mutex), so concurrent "ban each other" or "ban A + remove B" across replicas always leave an active super admin. Role removal now counts only active holders (banned, suspended or account-less super admins no longer rescue the last one), and the revoking actor is re-authorized under the lock. New `domain.SuperAdminLocker`, `domain.BlockedFunc`, `Access.SetSuperAdminBlocked` (wired by `guard.Build`). Custom role repositories without `SuperAdminLocker` get only in-process exclusion.
 
 ### Tests
 - 100% statement coverage across all packages (`65cd94f`).

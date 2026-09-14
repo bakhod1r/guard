@@ -46,6 +46,7 @@ environment and record the evidence (config file, dashboard, runbook link).
 - [ ] Define retention (e.g. 400 days for SOC 2 / ISO evidence). Guard does not prune `guard_audit_event`; schedule a job:
   `DELETE FROM guard_audit_event WHERE occurred_at < now() - interval '400 days';` (batch it, or partition by month).
 - [ ] Ship audit rows to your SIEM if tamper resistance is required; the application DB role can modify the table.
+- [ ] Set `audit.email_key` / `Config.AuditEmailKey` (`GUARD_AUDIT_EMAIL_KEY=$(openssl rand -base64 32)`, stored as a secret). Login audit events never store raw emails; without a key they store an unkeyed `email_sha256` fingerprint that can be reversed by hashing a list of candidate addresses. Rotating the key breaks correlation with older `email_hmac` values.
 - [ ] Alert on bursts of `success = false` login events.
 
 ## 8. Keys and secrets rotation
@@ -86,4 +87,5 @@ environment and record the evidence (config file, dashboard, runbook link).
 
 ## 14. Super admin and access cache
 - [ ] Bootstrap one `super_admin` with `EnsureSuperAdmin`, then remove `GUARD_SUPERADMIN_*` from the environment and rotate the password. Keep at least two super admins so one lost account is recoverable.
+- [ ] Ban/suspend of super admins and super_admin removal are serialised cluster-wide by a PostgreSQL advisory lock (`Access.LockSuperAdmins`, waits at most 10s, then fails). Each waiter holds one pool connection per process; keep `pgxpool` `MaxConns` >= 3. A custom role repository must implement `access/domain.SuperAdminLocker` for cross-replica safety. Deleting host user rows bypasses the rule entirely.
 - [ ] With `AccessCache` enabled, call `InvalidateAccess` from host code that deletes or bans users outside Guard (otherwise grants may be stale for up to the TTL, default 30s).

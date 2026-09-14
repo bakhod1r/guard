@@ -42,6 +42,8 @@ lockout:
 audit:
   # Buffered async audit writes. 0 = synchronous (no events lost on crash).
   async_buffer: 0
+  # Key (base64, >= 32 bytes) for login audit email_hmac; empty = unkeyed email_sha256.
+  email_key: "${GUARD_AUDIT_EMAIL_KEY}"
 
 migrations:
   # Where rendered SQL migrations are written (commit this directory).

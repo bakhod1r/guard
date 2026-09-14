@@ -55,3 +55,19 @@ func TestEnsureOtherSuperAdmin(t *testing.T) {
 		}
 	}
 }
+
+func TestActiveSuperAdmins(t *testing.T) {
+	blocked := map[string]bool{"b": true}
+	got := ActiveSuperAdmins([]string{"a", "b", "c", "new"}, "b", func(id string) bool {
+		if id == "new" {
+			return true // unknown holders are treated as blocked (fail closed)
+		}
+		return blocked[id]
+	})
+	if len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
+		t.Fatalf("got %v", got)
+	}
+	if err := EnsureOtherSuperAdmin(ActiveSuperAdmins([]string{"a", "b"}, "a", func(id string) bool { return id == "b" }), "a"); !errors.Is(err, ErrLastSuperAdmin) {
+		t.Fatal(err)
+	}
+}

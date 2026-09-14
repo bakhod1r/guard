@@ -16,6 +16,7 @@ type Memory struct {
 	permissions map[string]domain.Permission
 	grants      map[string]map[string]*time.Time // user -> role -> expiry
 	policies    map[string]domain.Policy
+	sa          ctxMutex // super admin lock, see LockSuperAdmins
 }
 
 func NewMemory() *Memory {

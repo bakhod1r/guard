@@ -260,7 +260,7 @@ func Build(r Repositories, cfg Config) *Guard {
 		asyncAudit = audit.NewAsync(r.Audit, cfg.AsyncAudit, cfg.Logger)
 		r.Audit = asyncAudit
 	}
-	return &Guard{
+	g := &Guard{
 		logger:        cfg.Logger,
 		asyncAudit:    asyncAudit,
 		userTable:     cfg.UserTable,
@@ -274,6 +274,8 @@ func Build(r Repositories, cfg Config) *Guard {
 		Limiter:       r.Limiter,
 		defaultRole:   cfg.DefaultRole,
 	}
+	g.Access.SetSuperAdminBlocked(g.superAdminBlocked)
+	return g
 }
 
 // sessionPolicy fills each zero field separately: a policy that only sets
@@ -579,10 +581,7 @@ func (g *Guard) Authorize(ctx context.Context, p *Principal, action string, res 
 
 // SetUserStatus changes account status; blocking also revokes every session.
 func (g *Guard) SetUserStatus(ctx context.Context, actorID, userID string, status Status) error {
-	if err := g.checkSuperAdminStatus(ctx, userID, status); err != nil {
-		return err
-	}
-	if err := g.Identity.SetStatus(ctx, identitydomain.UserID(userID), status); err != nil {
+	if err := g.changeStatus(ctx, userID, status); err != nil {
 		return err
 	}
 	if status == identitydomain.StatusBanned || status == identitydomain.StatusSuspended {

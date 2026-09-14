@@ -7,7 +7,7 @@ user_id_column: id
 default_role: user
 session: { idle: 30m, absolute: 168h }
 lockout: { attempts: 5, window: 15m }
-audit: { async_buffer: 0 }
+audit: { async_buffer: 0, email_key: "${GUARD_AUDIT_EMAIL_KEY}" } # base64, >= 32 bytes; empty = email_sha256
 migrations: { dir: ./migrations/guard, auto_apply: true }
 http:
   cookie_name: guard_session

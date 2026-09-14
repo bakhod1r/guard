@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/bakhod1r/guard/access/domain"
 )
 
@@ -112,6 +114,108 @@ func TestCachedRoleHolders(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := p.UnassignRoleChecked(ctx, "u2", "admin", nil); !errors.Is(err, domain.ErrHoldersUnsupported) {
+		t.Fatal(err)
+	}
+}
+
+// exerciseSuperAdminLock checks mutual exclusion, error propagation and a
+// bounded wait against any SuperAdminLocker.
+func exerciseSuperAdminLock(t *testing.T, l domain.SuperAdminLocker) {
+	t.Helper()
+	ctx := context.Background()
+	var inside, maxInside, runs int
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := l.LockSuperAdmins(ctx, func(context.Context) error {
+				mu.Lock()
+				inside++
+				runs++
+				if inside > maxInside {
+					maxInside = inside
+				}
+				mu.Unlock()
+				time.Sleep(10 * time.Millisecond)
+				mu.Lock()
+				inside--
+				mu.Unlock()
+				return nil
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if maxInside != 1 || runs != 8 {
+		t.Fatalf("maxInside=%d runs=%d", maxInside, runs)
+	}
+	stop := errors.New("stop")
+	if err := l.LockSuperAdmins(ctx, func(context.Context) error { return stop }); !errors.Is(err, stop) {
+		t.Fatal(err)
+	}
+	// A waiter gives up when its context ends while the lock is held.
+	held, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_ = l.LockSuperAdmins(ctx, func(context.Context) error { close(held); <-release; return nil })
+	}()
+	<-held
+	short, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := l.LockSuperAdmins(short, func(context.Context) error { t.Error("ran without lock"); return nil }); err == nil {
+		t.Fatal("want wait error")
+	}
+	close(release)
+	must(t, l.LockSuperAdmins(ctx, func(context.Context) error { return nil }))
+}
+
+func TestMemorySuperAdminLock(t *testing.T) { exerciseSuperAdminLock(t, NewMemory()) }
+
+func TestPostgresSuperAdminLock(t *testing.T) {
+	e := newPG(t)
+	exerciseSuperAdminLock(t, e.repo)
+	ctx := context.Background()
+	for _, marker := range []string{"lock_timeout", "pg_advisory_xact_lock"} {
+		e.tracer.failOn(marker)
+		if err := e.repo.LockSuperAdmins(ctx, func(context.Context) error { t.Error("ran without lock"); return nil }); err == nil {
+			t.Fatalf("%s: want error", marker)
+		}
+	}
+	// Two repositories on separate pools (two instances) still exclude each other.
+	pool2, err := pgxpool.NewWithConfig(ctx, e.pool.Config().Copy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool2.Close()
+	other := NewPostgres(pool2)
+	held, release := make(chan struct{}), make(chan struct{})
+	go func() {
+		_ = e.repo.LockSuperAdmins(ctx, func(context.Context) error { close(held); <-release; return nil })
+	}()
+	<-held
+	short, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if err := other.LockSuperAdmins(short, func(context.Context) error { return nil }); err == nil {
+		t.Fatal("second instance acquired a held lock")
+	}
+	close(release)
+	cancelled, cancel2 := context.WithCancel(ctx)
+	cancel2()
+	if err := other.LockSuperAdmins(cancelled, func(context.Context) error { return nil }); err == nil {
+		t.Fatal("want begin error")
+	}
+}
+
+func TestCachedSuperAdminLock(t *testing.T) {
+	o := newOrigin(t)
+	exerciseSuperAdminLock(t, NewCached(o, o, nil, CacheOptions{}))
+	p := NewCached(plainRoles{o}, o, nil, CacheOptions{})
+	// Without an origin lock fn still runs; Service adds the process-wide lock.
+	stop := errors.New("stop")
+	if err := p.LockSuperAdmins(context.Background(), func(context.Context) error { return stop }); !errors.Is(err, stop) {
 		t.Fatal(err)
 	}
 }

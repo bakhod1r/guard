@@ -70,3 +70,28 @@ type RoleHolderRepository interface {
 	// same role are excluded, returns nil.
 	UnassignRoleChecked(ctx context.Context, userID, role string, check func(holders []string) error) error
 }
+
+// SuperAdminLocker is implemented by role repositories that can serialise,
+// across every instance sharing the store, all operations that may shrink
+// the set of active super admins (ban/suspend, role removal).
+type SuperAdminLocker interface {
+	// LockSuperAdmins runs fn while holding the super admin lock. It returns
+	// without calling fn when the lock cannot be acquired (ctx done, timeout).
+	LockSuperAdmins(ctx context.Context, fn func(context.Context) error) error
+}
+
+// BlockedFunc reports whether a super admin holder can no longer act
+// (banned, suspended or without an account).
+type BlockedFunc func(ctx context.Context, userID string) (bool, error)
+
+// ActiveSuperAdmins keeps the holders that are not blocked. userID, the
+// subject of the change, is always kept so EnsureOtherSuperAdmin can decide.
+func ActiveSuperAdmins(holders []string, userID string, blocked func(id string) bool) []string {
+	out := make([]string, 0, len(holders))
+	for _, h := range holders {
+		if h == userID || !blocked(h) {
+			out = append(out, h)
+		}
+	}
+	return out
+}

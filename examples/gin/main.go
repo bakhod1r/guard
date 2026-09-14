@@ -4,6 +4,7 @@
 //	DATABASE_URL=postgres://... REDIS_ADDR=localhost:6379 \
 //	GUARD_SUPERADMIN_EMAIL=root@example.com GUARD_SUPERADMIN_PASSWORD=... \
 //	GUARD_ADMIN_EMAIL=admin@example.com GUARD_ADMIN_PASSWORD=change-me-now \
+//	GUARD_AUDIT_EMAIL_KEY=$(openssl rand -base64 32) \
 //	go run ./examples/gin
 package main
 

@@ -80,6 +80,7 @@ r.Run(":8080")
 | `lockout.attempts` | int | `5` | failed logins before lockout |
 | `lockout.window` | duration | `15m` | lockout window |
 | `audit.async_buffer` | int | `0` | in-process async audit buffer; `0` = synchronous |
+| `audit.email_key` | base64 string | `""` | `Config.AuditEmailKey`; must decode to >= 32 bytes. Set: login audit metadata stores `email_hmac` (HMAC-SHA256, 32 hex chars); empty: `email_sha256` (unkeyed, 16 hex chars). Use `"${GUARD_AUDIT_EMAIL_KEY}"`; generate with `openssl rand -base64 32` |
 | `audit.redis_buffer.enabled` | bool | `false` | `Config.AuditBuffer` (Redis queue, batch writes) |
 | `audit.redis_buffer.batch_size` | int | `500` | events per batch |
 | `audit.redis_buffer.interval` | duration | `1s` | flush interval |

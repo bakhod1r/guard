@@ -76,22 +76,42 @@ func (g *Guard) recordRoleChange(ctx context.Context, op, action, superAction, a
 	g.record(ctx, e)
 }
 
+// superAdminBlocked reports whether super admin id can no longer act: banned,
+// suspended, or without an account.
+func (g *Guard) superAdminBlocked(ctx context.Context, id string) (bool, error) {
+	u, err := g.Identity.User(ctx, identitydomain.UserID(id))
+	if errors.Is(err, identitydomain.ErrUserNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return u.CanLogin() != nil, nil
+}
+
+// changeStatus applies status. Blocking runs the last-super-admin check and
+// the write under the super admin lock, so concurrent bans and role removals
+// cannot each see another active super admin and leave none.
+func (g *Guard) changeStatus(ctx context.Context, userID string, status Status) error {
+	set := func(ctx context.Context) error {
+		if err := g.checkSuperAdminStatus(ctx, userID, status); err != nil {
+			return err
+		}
+		return g.Identity.SetStatus(ctx, identitydomain.UserID(userID), status)
+	}
+	if status != identitydomain.StatusBanned && status != identitydomain.StatusSuspended {
+		return set(ctx)
+	}
+	return g.Access.LockSuperAdmins(ctx, set)
+}
+
 // checkSuperAdminStatus refuses to ban or suspend the last super admin whose
 // account can still log in. Called by SetUserStatus before the change.
 func (g *Guard) checkSuperAdminStatus(ctx context.Context, userID string, status Status) error {
 	if status != identitydomain.StatusBanned && status != identitydomain.StatusSuspended {
 		return nil
 	}
-	err := g.Access.EnsureCanBlock(ctx, userID, func(ctx context.Context, id string) (bool, error) {
-		u, err := g.Identity.User(ctx, identitydomain.UserID(id))
-		if errors.Is(err, identitydomain.ErrUserNotFound) {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return u.CanLogin() != nil, nil
-	})
+	err := g.Access.EnsureCanBlock(ctx, userID, g.superAdminBlocked)
 	switch {
 	case errors.Is(err, accessdomain.ErrHoldersUnsupported):
 		// Availability guard only: a custom role repository must not make bans impossible.
