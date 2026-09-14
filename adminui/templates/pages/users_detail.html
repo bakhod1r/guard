@@ -1,6 +1,6 @@
 {{define "content"}}
 {{$d := .Data}}{{$u := $d.Account}}{{$path := print $.Base "/users/" $u.ID}}
-<div class="bar"><h1>{{$u.Email}}</h1><a class="btn sm" href="{{.Base}}/users">All users</a></div>
+<div class="bar"><h1>{{$u.Email}}{{if $d.SuperAdmin}} <span class="badge ok" data-badge="super-admin" title="Manages admin and super_admin grants">Super admin</span>{{end}}</h1><a class="btn sm" href="{{.Base}}/users">All users</a></div>
 <div class="grid">
 <div class="card">
   <h2>Account</h2>
@@ -20,7 +20,7 @@
     </select></div>
     <button class="btn">Save status</button>
   </form>
-  <form method="post" action="{{$path}}/password" class="row">
+  <form method="post" action="{{$path}}/password" class="row" data-confirm="Reset this user's password?">
     <input type="hidden" name="_csrf" value="{{$.CSRF}}">
     <div><label for="password">New password</label><input id="password" name="password" type="password" minlength="8" maxlength="128" required autocomplete="new-password"></div>
     <button class="btn danger">Reset password</button>
@@ -51,7 +51,7 @@
     <tbody>{{range $d.Grants}}<tr>
       <td>{{.Role.Title}} <span class="mono mute">{{.Role.Name}}</span></td>
       <td>{{if .ExpiresAt}}{{time .ExpiresAt}}{{else}}never{{end}}</td>
-      {{if $d.CanAssign}}<td><form method="post" action="{{$path}}/roles/{{.Role.Name}}/remove" class="inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Remove</button></form></td>{{end}}
+      {{if $d.CanAssign}}<td><form method="post" action="{{$path}}/roles/{{.Role.Name}}/remove" class="inline" data-confirm="Remove this role from the user?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Remove</button></form></td>{{end}}
     </tr>{{end}}</tbody>
   </table>
   {{else}}<p class="empty">No roles.</p>{{end}}
@@ -67,7 +67,7 @@
 
 <div class="card scroll">
   <div class="bar"><h2>Sessions</h2>
-  {{if $d.CanRevokeSessions}}<form method="post" action="{{$path}}/sessions/revoke-all" class="inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke all sessions</button></form>{{end}}</div>
+  {{if $d.CanRevokeSessions}}<form method="post" action="{{$path}}/sessions/revoke-all" class="inline" data-confirm="Revoke all sessions of this user?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke all sessions</button></form>{{end}}</div>
   {{if $d.Sessions}}
   <table>
     <thead><tr><th scope="col">Started</th><th scope="col">Last seen</th><th scope="col">Expires</th><th scope="col">IP</th><th scope="col">User agent</th></tr></thead>
@@ -78,7 +78,7 @@
 
 <div class="card scroll">
   <div class="bar"><h2>API keys</h2>
-  {{if $d.CanRevokeKeys}}<form method="post" action="{{$path}}/api-keys/revoke-all" class="inline"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke all API keys</button></form>{{end}}</div>
+  {{if $d.CanRevokeKeys}}<form method="post" action="{{$path}}/api-keys/revoke-all" class="inline" data-confirm="Revoke all API keys of this user?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke all API keys</button></form>{{end}}</div>
   {{if $d.APIKeys}}
   <table>
     <thead><tr><th scope="col">Name</th><th scope="col">Prefix</th><th scope="col">Scopes</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">State</th></tr></thead>

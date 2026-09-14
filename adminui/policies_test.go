@@ -101,7 +101,7 @@ func TestPoliciesCreateListUpdateToggleDelete(t *testing.T) {
 	up := policiesForm("finance renamed", "")
 	up.Set("effect", "allow")
 	up.Del("enabled")
-	code, _, h = p.post("/guard-admin/policies/"+pol.ID, up)
+	code, _, _ = p.post("/guard-admin/policies/"+pol.ID, up)
 	if code != http.StatusSeeOther {
 		t.Fatalf("update: %d", code)
 	}

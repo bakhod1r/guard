@@ -18,8 +18,8 @@ func TestNewSeedsRolesPermissionsAndPolicies(t *testing.T) {
 	ctx := context.Background()
 
 	roles, err := g.Access.ListRoles(ctx)
-	if err != nil || len(roles) != 2 || roles[0].Name != "admin" || !roles[0].Wildcard || !roles[0].IsSystem ||
-		roles[1].Name != "user" || roles[1].Wildcard {
+	if err != nil || len(roles) != 3 || roles[0].Name != "admin" || !roles[0].Wildcard || !roles[0].IsSystem ||
+		roles[1].Name != "super_admin" || !roles[1].Wildcard || roles[2].Name != "user" || roles[2].Wildcard {
 		t.Fatalf("roles: %+v %v", roles, err)
 	}
 

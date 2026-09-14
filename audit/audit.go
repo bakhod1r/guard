@@ -4,6 +4,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -73,9 +74,47 @@ func (p *Postgres) insert(ctx context.Context, e Event, actor any) error {
 	if err != nil {
 		return err
 	}
-	_, err = p.db.Exec(ctx, `INSERT INTO guard_audit_event (id, occurred_at, actor_id, action, target, success, ip, user_agent, metadata)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,NULLIF($7,''),NULLIF($8,''),$9)`,
+	_, err = p.db.Exec(ctx, insertEvent,
 		e.ID, e.OccurredAt, actor, e.Action, e.Target, e.Success, e.IP, truncate(e.UserAgent, 512), meta)
+	return err
+}
+
+const insertEvent = `INSERT INTO guard_audit_event (id, occurred_at, actor_id, action, target, success, ip, user_agent, metadata)
+	VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,NULLIF($7,''),NULLIF($8,''),$9)
+	ON CONFLICT (id) DO NOTHING`
+
+// RecordBatch inserts events in one round trip; idempotent by Event.ID, so
+// retried batches are safe. An actor id not fitting the host id type fails the
+// whole batch, which then falls back to per-event Record.
+func (p *Postgres) RecordBatch(ctx context.Context, events []Event) error {
+	if len(events) == 0 {
+		return nil
+	}
+	prepared := make([]Event, len(events))
+	b := &pgx.Batch{}
+	for i, e := range events {
+		prepare(&e)
+		prepared[i] = e
+		meta, err := json.Marshal(e.Metadata)
+		if err != nil {
+			return err
+		}
+		var actor any
+		if e.ActorID != "" {
+			actor = e.ActorID
+		}
+		b.Queue(insertEvent, e.ID, e.OccurredAt, actor, e.Action, e.Target, e.Success, e.IP, truncate(e.UserAgent, 512), meta)
+	}
+	// pgx sends a multi-statement batch as an implicit transaction: all or nothing.
+	err := p.db.SendBatch(ctx, b).Close()
+	if pgerr.IsInvalidText(err) {
+		for _, e := range prepared {
+			if err := p.Record(ctx, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	return err
 }
 
@@ -139,4 +178,34 @@ func (m *Memory) List(_ context.Context, actorID string, limit int) ([]Event, er
 		}
 	}
 	return out, nil
+}
+
+// DefaultPruneBatch is used by Prune when batch <= 0.
+const DefaultPruneBatch = 1000
+
+// Prune deletes events older than olderThan in batches of batch rows, so a
+// large backlog never holds one long transaction or lock. Returns rows deleted.
+func (p *Postgres) Prune(ctx context.Context, olderThan time.Duration, batch int) (int64, error) {
+	if olderThan <= 0 {
+		return 0, errors.New("audit: Prune olderThan must be positive")
+	}
+	if batch <= 0 {
+		batch = DefaultPruneBatch
+	}
+	cutoff := time.Now().UTC().Add(-olderThan)
+	var total int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		tag, err := p.db.Exec(ctx, `DELETE FROM guard_audit_event WHERE id IN (
+			SELECT id FROM guard_audit_event WHERE occurred_at < $1 ORDER BY occurred_at LIMIT $2)`, cutoff, batch)
+		if err != nil {
+			return total, err
+		}
+		total += tag.RowsAffected()
+		if tag.RowsAffected() < int64(batch) {
+			return total, nil
+		}
+	}
 }

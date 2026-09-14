@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+
+	"github.com/pressly/goose/v3/lock"
 )
 
 var validRef = UserRef{Table: "users", IDColumn: "id", IDType: "bigint"}
@@ -159,3 +161,14 @@ func TestUpDownErrorsIntegration(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderReportsLockerError(t *testing.T) {
+	old := newSessionLocker
+	newSessionLocker = func() (lock.SessionLocker, error) { return nil, errBoomLocker }
+	defer func() { newSessionLocker = old }()
+	if err := Up(context.Background(), nil, "", validRef); !errors.Is(err, errBoomLocker) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+var errBoomLocker = errors.New("locker boom")

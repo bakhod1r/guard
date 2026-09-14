@@ -38,6 +38,21 @@ type Options struct {
 	// AuthRateLimit throttles /login and /register per client IP.
 	// Zero value: 10 requests per minute. Limit < 0 disables.
 	AuthRateLimit ratelimit.Rule
+	// TrustedOrigins lists hosts ("app.example.com" or "https://app.example.com")
+	// allowed to send unsafe (POST/PUT/PATCH/DELETE) requests authenticated by
+	// the session cookie. Empty: only the request's own Host; when set, the own
+	// Host is NOT implied, so list it too if needed. Requests carrying
+	// X-Guard-CSRF: 1, a Bearer token or an X-API-Key are exempt.
+	TrustedOrigins []string
+	// MaxBodyBytes caps request bodies on Guard routes (413 body_too_large).
+	// Zero value: 1 MiB.
+	MaxBodyBytes int64
+	// HSTS sends Strict-Transport-Security even on plain-HTTP requests (set it
+	// behind a TLS-terminating proxy). TLS requests always get it.
+	HSTS bool
+	// ErrorLogger receives internal errors and rate-limiter failures; response
+	// bodies only ever say "internal error". Default: DefaultErrorLogger (slog).
+	ErrorLogger func(c *gin.Context, err error)
 }
 
 func (o Options) withDefaults() Options {
@@ -53,6 +68,12 @@ func (o Options) withDefaults() Options {
 	if o.AuthRateLimit == (ratelimit.Rule{}) {
 		o.AuthRateLimit = ratelimit.Rule{Limit: 10, Window: time.Minute}
 	}
+	if o.MaxBodyBytes <= 0 {
+		o.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if o.ErrorLogger == nil {
+		o.ErrorLogger = DefaultErrorLogger
+	}
 	return o
 }
 
@@ -67,17 +88,25 @@ func PrincipalFrom(c *gin.Context) *guard.Principal {
 }
 
 // credential reads, in order: X-API-Key, Authorization: Bearer, session cookie.
-func credential(c *gin.Context, o Options) string {
+// fromCookie is true when the token came from the cookie (CSRF-exposed).
+func credential(c *gin.Context, o Options) (tok string, fromCookie bool) {
 	if k := strings.TrimSpace(c.GetHeader("X-API-Key")); k != "" {
-		return k
+		return k, false
 	}
 	if h := c.GetHeader("Authorization"); len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
-		return strings.TrimSpace(h[7:])
+		return strings.TrimSpace(h[7:]), false
 	}
 	if v, err := c.Cookie(o.CookieName); err == nil {
-		return v
+		return v, true
 	}
-	return ""
+	return "", false
+}
+
+// useErrorLogger installs o.ErrorLogger unless an outer layer already did.
+func useErrorLogger(c *gin.Context, o Options) {
+	if _, ok := c.Get(errorLoggerKey); !ok {
+		c.Set(errorLoggerKey, o.ErrorLogger)
+	}
 }
 
 func meta(c *gin.Context) guard.RequestMeta {
@@ -88,8 +117,9 @@ func meta(c *gin.Context) guard.RequestMeta {
 func Authenticate(g *guard.Guard, opts Options) gin.HandlerFunc {
 	o := opts.withDefaults()
 	return func(c *gin.Context) {
+		useErrorLogger(c, o)
 		if PrincipalFrom(c) == nil {
-			if tok := credential(c, o); tok != "" {
+			if tok, cookie := credential(c, o); tok != "" && (!cookie || csrfOK(c, o)) {
 				if p, err := g.Authenticate(c.Request.Context(), tok); err == nil {
 					c.Set(principalKey, p)
 				}
@@ -112,16 +142,19 @@ func RequireAuth(g *guard.Guard, opts Options) gin.HandlerFunc {
 // authenticate attaches the principal or aborts; it never calls c.Next so
 // callers can run further checks before the handler chain continues.
 func authenticate(c *gin.Context, g *guard.Guard, o Options) bool {
+	useErrorLogger(c, o)
 	if PrincipalFrom(c) != nil {
 		return true
 	}
-	tok := credential(c, o)
+	tok, cookie := credential(c, o)
 	if tok == "" {
 		abort(c, http.StatusUnauthorized, "unauthenticated", "authentication required")
 		return false
 	}
 	p, err := g.Authenticate(c.Request.Context(), tok)
 	switch {
+	case err == nil && cookie && !csrfOK(c, o):
+		abort(c, http.StatusForbidden, "csrf_failed", "cross-site request rejected: send a trusted Origin or "+CSRFHeader+": 1")
 	case err == nil:
 		c.Set(principalKey, p)
 		return true
@@ -169,7 +202,7 @@ func ByPrincipal(c *gin.Context) string {
 
 // RateLimit rejects requests over rule with 429 and sets X-RateLimit-* headers.
 // name separates buckets of different routes. Limiter errors fail open
-// (recorded via c.Error) so a Redis outage does not take the API down.
+// (recorded via c.Error and the error logger) so a Redis outage does not take the API down.
 func RateLimit(g *guard.Guard, name string, rule ratelimit.Rule, key KeyFunc) gin.HandlerFunc {
 	if err := rule.Valid(); err != nil {
 		panic("ginguard: " + err.Error())
@@ -181,7 +214,7 @@ func RateLimit(g *guard.Guard, name string, rule ratelimit.Rule, key KeyFunc) gi
 		}
 		res, err := g.Limiter.Allow(c.Request.Context(), name+":"+key(c), rule)
 		if err != nil {
-			_ = c.Error(err)
+			logError(c, err)
 			c.Next()
 			return
 		}
@@ -295,6 +328,9 @@ var errorMap = []struct {
 	{accessdomain.ErrPermissionNotFound, http.StatusNotFound, "permission_not_found"},
 	{accessdomain.ErrPolicyNotFound, http.StatusNotFound, "policy_not_found"},
 	{accessdomain.ErrSubjectNotFound, http.StatusNotFound, "user_not_found"},
+	{accessdomain.ErrForbidden, http.StatusForbidden, "forbidden"},
+	{accessdomain.ErrLastSuperAdmin, http.StatusConflict, "last_super_admin"},
+	{accessdomain.ErrSuperAdminExpiry, http.StatusBadRequest, "invalid_expiry"},
 	{guard.ErrSessionRequired, http.StatusForbidden, "session_required"},
 	{apikeydomain.ErrInvalidName, http.StatusBadRequest, "invalid_name"},
 	{apikeydomain.ErrInvalidScope, http.StatusBadRequest, "invalid_scope"},
@@ -312,6 +348,6 @@ func fail(c *gin.Context, err error) {
 			return
 		}
 	}
-	_ = c.Error(err)
+	logError(c, err)
 	abort(c, http.StatusInternalServerError, "internal", "internal error")
 }

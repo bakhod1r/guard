@@ -39,7 +39,7 @@ func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (*do
 	if err != nil {
 		return nil, err
 	}
-	if err := domain.ValidatePassword(in.Password); err != nil {
+	if err := domain.ValidatePasswordFor(string(email), in.Password); err != nil {
 		return nil, err
 	}
 	hash, err := s.hasher.Hash(in.Password)
@@ -63,11 +63,11 @@ func (s *Service) CreateAccount(ctx context.Context, in CreateAccountInput) (*do
 
 // SetPassword is an administrative reset: no old password, clears lockout.
 func (s *Service) SetPassword(ctx context.Context, id domain.UserID, newPassword string) error {
-	if err := domain.ValidatePassword(newPassword); err != nil {
-		return err
-	}
 	u, err := s.users.ByID(ctx, id)
 	if err != nil {
+		return err
+	}
+	if err := domain.ValidatePasswordFor(string(u.Email), newPassword); err != nil {
 		return err
 	}
 	if u.PasswordHash, err = s.hasher.Hash(newPassword); err != nil {
@@ -99,6 +99,8 @@ func (s *Service) Authenticate(ctx context.Context, rawEmail, password string) (
 	}
 	now := s.now().UTC()
 	if u.Locked(now, s.lockout) {
+		// Same hashing cost as a real attempt so lock state is not observable by timing.
+		_, _ = s.hasher.Verify(password, dummyHash)
 		return nil, domain.ErrUserLocked
 	}
 	ok, err := s.hasher.Verify(password, u.PasswordHash)
@@ -116,10 +118,23 @@ func (s *Service) Authenticate(ctx context.Context, rawEmail, password string) (
 		return nil, err
 	}
 	u.RecordLogin(now)
+	s.rehash(u, password)
 	if err := s.users.Update(ctx, u); err != nil {
 		return nil, err
 	}
 	return u, nil
+}
+
+// rehash upgrades an outdated hash in place; failure keeps the old hash so a
+// hasher problem never blocks a valid login.
+func (s *Service) rehash(u *domain.User, password string) {
+	r, ok := s.hasher.(domain.Rehasher)
+	if !ok || !r.NeedsRehash(u.PasswordHash) {
+		return
+	}
+	if h, err := s.hasher.Hash(password); err == nil {
+		u.PasswordHash = h
+	}
 }
 
 func (s *Service) ChangePassword(ctx context.Context, id domain.UserID, oldPassword, newPassword string) error {
@@ -134,7 +149,7 @@ func (s *Service) ChangePassword(ctx context.Context, id domain.UserID, oldPassw
 	if !ok {
 		return domain.ErrInvalidCredentials
 	}
-	if err := domain.ValidatePassword(newPassword); err != nil {
+	if err := domain.ValidatePasswordFor(string(u.Email), newPassword); err != nil {
 		return err
 	}
 	if u.PasswordHash, err = s.hasher.Hash(newPassword); err != nil {

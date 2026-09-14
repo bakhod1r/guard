@@ -141,3 +141,10 @@ type PasswordHasher interface {
 	Hash(plain string) (string, error)
 	Verify(plain, hash string) (bool, error)
 }
+
+// Rehasher is an optional PasswordHasher capability: report whether a stored
+// hash uses outdated parameters or algorithms and should be replaced after a
+// successful login.
+type Rehasher interface {
+	NeedsRehash(hash string) bool
+}

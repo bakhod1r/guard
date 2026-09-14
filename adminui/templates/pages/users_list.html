@@ -29,7 +29,7 @@
 </table>
 </div>
 {{end}}
-<div class="row" style="justify-content:space-between">
+<div class="row between">
   {{if $d.PrevPage}}<a class="btn sm" href="?q={{$d.Search}}&amp;status={{$d.Status}}&amp;page={{$d.PrevPage}}">Previous</a>{{end}}
   <span class="mute">Page {{$d.Page}}</span>
   {{if $d.NextPage}}<a class="btn sm" href="?q={{$d.Search}}&amp;status={{$d.Status}}&amp;page={{$d.NextPage}}">Next</a>{{end}}

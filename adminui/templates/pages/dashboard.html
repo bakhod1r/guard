@@ -6,7 +6,7 @@
 </div>
 <div class="grid">
   {{range .Data.Stats}}
-  <a class="card stat" data-stat="{{.Key}}" href="{{$.Base}}{{.Href}}" style="text-decoration:none;color:inherit">
+  <a class="card stat plain" data-stat="{{.Key}}" href="{{$.Base}}{{.Href}}">
     <span class="mute">{{.Label}}</span>
     {{if .Err}}<span class="badge bad" role="alert">{{.Err}}</span>{{else}}<b>{{.Value}}</b>{{end}}
   </a>

@@ -32,10 +32,10 @@ func renderAll(t *testing.T, ref UserRef) map[string]string {
 func TestRenderSubstitutes(t *testing.T) {
 	for _, typ := range []string{"bigint", "uuid", "character varying(36)"} {
 		files := renderAll(t, UserRef{Table: "users", IDColumn: "id", IDType: typ})
-		if len(files) != 3 {
-			t.Fatalf("%s: want 3 files, got %d", typ, len(files))
+		if len(files) != 6 {
+			t.Fatalf("%s: want 6 files, got %d", typ, len(files))
 		}
-		for _, name := range []string{"00001_guard_init.sql", "00002_guard_seed.sql", "00003_guard_api_key.sql"} {
+		for _, name := range []string{"00001_guard_init.sql", "00002_guard_seed.sql", "00003_guard_api_key.sql", "00004_guard_indexes.sql", "00005_guard_super_admin.sql", "00006_guard_route.sql"} {
 			body, ok := files[name]
 			if !ok {
 				t.Fatalf("missing %s", name)
@@ -85,7 +85,7 @@ func TestWriteDoesNotOverwrite(t *testing.T) {
 	ref := UserRef{Table: "users", IDColumn: "id", IDType: "bigint"}
 	dir := filepath.Join(t.TempDir(), "db", "guard")
 	written, err := Write(dir, ref)
-	if err != nil || len(written) != 3 {
+	if err != nil || len(written) != 6 {
 		t.Fatalf("first write: %v %v", written, err)
 	}
 	for _, p := range written {
@@ -107,5 +107,21 @@ func TestWriteDoesNotOverwrite(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(custom); string(b) != "-- edited" {
 		t.Fatal("existing file overwritten")
+	}
+}
+
+func TestRenderIndexMigration(t *testing.T) {
+	body := renderAll(t, validRef)["00004_guard_indexes.sql"]
+	for _, want := range []string{
+		"CREATE INDEX IF NOT EXISTS guard_idx_role_permission_granted_by ON guard_role_permission (granted_by) WHERE granted_by IS NOT NULL",
+		"CREATE INDEX IF NOT EXISTS guard_idx_user_role_granted_by ON guard_user_role (granted_by) WHERE granted_by IS NOT NULL",
+		"CREATE INDEX IF NOT EXISTS guard_idx_pcg_policy ON guard_policy_condition_group (policy_id)",
+		"DROP INDEX IF EXISTS guard_idx_role_permission_granted_by",
+		"DROP INDEX IF EXISTS guard_idx_user_role_granted_by",
+		"DROP INDEX IF EXISTS guard_idx_pcg_policy",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("00004 missing %q", want)
+		}
 	}
 }

@@ -52,6 +52,7 @@ func (f *failingUsers) Update(ctx context.Context, u *domain.User) error {
 // fakeHasher is a plaintext hasher with switchable failures.
 type fakeHasher struct {
 	hashErr, verifyErr bool
+	verifies           int
 }
 
 func (h *fakeHasher) Hash(plain string) (string, error) {
@@ -62,20 +63,21 @@ func (h *fakeHasher) Hash(plain string) (string, error) {
 }
 
 func (h *fakeHasher) Verify(plain, hash string) (bool, error) {
+	h.verifies++
 	if h.verifyErr {
 		return false, errHasher
 	}
 	return hash == "h:"+plain, nil
 }
 
-// seeded returns a service with account 1/a@b.uz (password "password1") and
+// seeded returns a service with account 1/a@b.uz (password "correct-horse-1") and
 // handles to toggle repository and hasher failures afterwards.
 func seeded(t *testing.T) (*Service, *failingUsers, *fakeHasher) {
 	t.Helper()
 	repo := &failingUsers{UserRepository: infrastructure.NewMemoryUsers()}
 	h := &fakeHasher{}
 	s := NewService(repo, h, domain.Lockout{MaxAttempts: 3, Duration: time.Minute})
-	if _, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: "1", Email: "a@b.uz", Password: "password1"}); err != nil {
+	if _, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: "1", Email: "a@b.uz", Password: "correct-horse-1"}); err != nil {
 		t.Fatal(err)
 	}
 	return s, repo, h
@@ -91,34 +93,34 @@ func TestServicePropagatesDependencyErrors(t *testing.T) {
 	}{
 		{"create account hasher fails", func(_ *failingUsers, h *fakeHasher) { h.hashErr = true },
 			func(s *Service) error {
-				_, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "2", Email: "c@d.uz", Password: "password1"})
+				_, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "2", Email: "c@d.uz", Password: "correct-horse-1"})
 				return err
 			}, errHasher},
 		{"create account repository fails", func(r *failingUsers, _ *fakeHasher) { r.create = true },
 			func(s *Service) error {
-				_, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "2", Email: "c@d.uz", Password: "password1"})
+				_, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "2", Email: "c@d.uz", Password: "correct-horse-1"})
 				return err
 			}, errRepo},
 		{"set password hasher fails", func(_ *failingUsers, h *fakeHasher) { h.hashErr = true },
-			func(s *Service) error { return s.SetPassword(ctx, "1", "password2") }, errHasher},
+			func(s *Service) error { return s.SetPassword(ctx, "1", "battery-staple-2") }, errHasher},
 		{"authenticate lookup fails", func(r *failingUsers, _ *fakeHasher) { r.byEmail = true },
-			func(s *Service) error { _, err := s.Authenticate(ctx, "a@b.uz", "password1"); return err }, errRepo},
+			func(s *Service) error { _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); return err }, errRepo},
 		{"authenticate invalid email", nil,
-			func(s *Service) error { _, err := s.Authenticate(ctx, "bad", "password1"); return err }, domain.ErrInvalidCredentials},
+			func(s *Service) error { _, err := s.Authenticate(ctx, "bad", "correct-horse-1"); return err }, domain.ErrInvalidCredentials},
 		{"authenticate verify fails", func(_ *failingUsers, h *fakeHasher) { h.verifyErr = true },
-			func(s *Service) error { _, err := s.Authenticate(ctx, "a@b.uz", "password1"); return err }, errHasher},
+			func(s *Service) error { _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); return err }, errHasher},
 		{"authenticate failed-attempt update fails", func(r *failingUsers, _ *fakeHasher) { r.update = true },
 			func(s *Service) error { _, err := s.Authenticate(ctx, "a@b.uz", "wrong-pass"); return err }, errRepo},
 		{"authenticate success update fails", func(r *failingUsers, _ *fakeHasher) { r.update = true },
-			func(s *Service) error { _, err := s.Authenticate(ctx, "a@b.uz", "password1"); return err }, errRepo},
+			func(s *Service) error { _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); return err }, errRepo},
 		{"change password lookup fails", func(r *failingUsers, _ *fakeHasher) { r.byID = true },
-			func(s *Service) error { return s.ChangePassword(ctx, "1", "password1", "password2") }, errRepo},
+			func(s *Service) error { return s.ChangePassword(ctx, "1", "correct-horse-1", "battery-staple-2") }, errRepo},
 		{"change password verify fails", func(_ *failingUsers, h *fakeHasher) { h.verifyErr = true },
-			func(s *Service) error { return s.ChangePassword(ctx, "1", "password1", "password2") }, errHasher},
+			func(s *Service) error { return s.ChangePassword(ctx, "1", "correct-horse-1", "battery-staple-2") }, errHasher},
 		{"change password weak new password", nil,
-			func(s *Service) error { return s.ChangePassword(ctx, "1", "password1", "short") }, domain.ErrWeakPassword},
+			func(s *Service) error { return s.ChangePassword(ctx, "1", "correct-horse-1", "short") }, domain.ErrWeakPassword},
 		{"change password hasher fails", func(_ *failingUsers, h *fakeHasher) { h.hashErr = true },
-			func(s *Service) error { return s.ChangePassword(ctx, "1", "password1", "password2") }, errHasher},
+			func(s *Service) error { return s.ChangePassword(ctx, "1", "correct-horse-1", "battery-staple-2") }, errHasher},
 		{"set status lookup fails", func(r *failingUsers, _ *fakeHasher) { r.byID = true },
 			func(s *Service) error { return s.SetStatus(ctx, "1", domain.StatusBanned) }, errRepo},
 		{"set attributes lookup fails", func(r *failingUsers, _ *fakeHasher) { r.byID = true },

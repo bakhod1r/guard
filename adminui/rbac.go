@@ -25,7 +25,7 @@ func rbacRolePath(name string) string { return "/roles/" + url.PathEscape(name) 
 
 // rbacInternalError renders a 500 page for storage failures on GET pages.
 func (a *app) rbacInternalError(c *gin.Context, err error) {
-	_ = c.Error(err)
+	a.logError(c, err)
 	a.render(c, http.StatusInternalServerError, "error", "Error", "", map[string]string{
 		"Message": "Internal error while loading this page. Try again later.",
 	})

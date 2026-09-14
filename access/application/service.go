@@ -117,11 +117,34 @@ func (s *Service) RevokePermission(ctx context.Context, role, code string) error
 	return s.roles.RevokePermission(ctx, role, p)
 }
 
+// AssignRole grants role. A non-empty grantedBy is the acting user: admin and
+// super_admin grants then require that actor to be a super admin. An empty
+// grantedBy is a trusted system call (bootstrap). super_admin never expires.
 func (s *Service) AssignRole(ctx context.Context, userID, role, grantedBy string, expiresAt *time.Time) error {
+	if role == domain.RoleSuperAdmin && expiresAt != nil {
+		return domain.ErrSuperAdminExpiry
+	}
+	if grantedBy != "" {
+		if err := s.authorizeActor(ctx, grantedBy, role); err != nil {
+			return err
+		}
+	}
 	return s.roles.AssignRole(ctx, userID, role, grantedBy, expiresAt)
 }
 
+// UnassignRole revokes role as a trusted system call. Removing super_admin
+// from its last holder fails with domain.ErrLastSuperAdmin. Use
+// UnassignRoleAs for user-initiated changes.
 func (s *Service) UnassignRole(ctx context.Context, userID, role string) error {
+	if role == domain.RoleSuperAdmin {
+		h, err := s.holders()
+		if err != nil {
+			return err
+		}
+		return h.UnassignRoleChecked(ctx, userID, role, func(holders []string) error {
+			return domain.EnsureOtherSuperAdmin(holders, userID)
+		})
+	}
 	return s.roles.UnassignRole(ctx, userID, role)
 }
 

@@ -47,7 +47,8 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	h := &handlers{g: g, o: o}
 	perm := func(code string) gin.HandlerFunc { return RequirePermission(g, o, code) }
 
-	a := r.Group(o.AuthPath)
+	common := []gin.HandlerFunc{ErrorLogging(o.ErrorLogger), SecurityHeaders(o), limitBody(o.MaxBodyBytes)}
+	a := r.Group(o.AuthPath, common...)
 	var limited []gin.HandlerFunc
 	if o.AuthRateLimit.Limit > 0 {
 		limited = append(limited, RateLimit(g, "auth", o.AuthRateLimit, ByIP))
@@ -68,7 +69,7 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	session.POST("/api-keys", h.issueAPIKey)
 	session.DELETE("/api-keys/:id", h.revokeMyAPIKey)
 
-	m := r.Group(o.AdminPath)
+	m := r.Group(o.AdminPath, common...)
 	m.GET("/users/:id", Require(g, o, "user", "read", ParamResource("id")), h.getUser)
 	m.POST("/users/:id/account", perm("user.write"), h.createAccount)
 	m.PUT("/users/:id/password", perm("user.write"), h.resetPassword)
@@ -149,6 +150,10 @@ func toSessions(list []*guard.Session, current sessiondomain.ID) []sessionDTO {
 
 func bind(c *gin.Context, dst any) bool {
 	if err := c.ShouldBindJSON(dst); err != nil {
+		if isTooLarge(err) {
+			abort(c, http.StatusRequestEntityTooLarge, "body_too_large", "request body too large")
+			return false
+		}
 		abort(c, http.StatusBadRequest, "invalid_body", err.Error())
 		return false
 	}
@@ -191,10 +196,28 @@ func (h *handlers) login(c *gin.Context) {
 		fail(c, err)
 		return
 	}
+	h.revokeCookieSession(c)
 	maxAge := int(time.Until(res.Session.ExpiresAt).Seconds())
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(h.o.CookieName, string(res.Token), maxAge, "/", h.o.CookieDomain, !h.o.InsecureCookie, true)
 	c.JSON(http.StatusOK, gin.H{"token": res.Token, "expires_at": res.Session.ExpiresAt, "user": toUser(res.User)})
+}
+
+// revokeCookieSession ends the session the login request already carried, so
+// a planted or stale cookie session cannot outlive the fresh login.
+func (h *handlers) revokeCookieSession(c *gin.Context) {
+	old, err := c.Cookie(h.o.CookieName)
+	if err != nil || old == "" {
+		return
+	}
+	ctx := c.Request.Context()
+	p, err := h.g.Authenticate(ctx, old)
+	if err != nil || p.Session == nil {
+		return
+	}
+	if err := h.g.Sessions.Revoke(ctx, p.Session.ID); err != nil {
+		logError(c, err)
+	}
 }
 
 func (h *handlers) clearCookie(c *gin.Context) {
@@ -480,7 +503,7 @@ func (h *handlers) assignRole(c *gin.Context) {
 }
 
 func (h *handlers) unassignRole(c *gin.Context) {
-	if err := h.g.Access.UnassignRole(c.Request.Context(), c.Param("id"), c.Param("role")); err != nil {
+	if err := h.g.Access.UnassignRoleAs(c.Request.Context(), string(PrincipalFrom(c).User.ID), c.Param("id"), c.Param("role")); err != nil {
 		fail(c, err)
 		return
 	}

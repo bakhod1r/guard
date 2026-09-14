@@ -190,7 +190,7 @@ func (g *ConditionGroup) validate(depth int) error {
 			return fmt.Errorf("%w: unknown operator %q", ErrInvalidPolicy, c.Operator)
 		}
 		if !validPath(c.Field) {
-			return fmt.Errorf("%w: field %q must start with user., subject., resource. or env.", ErrInvalidPolicy, c.Field)
+			return fmt.Errorf("%w: field %q must start with user., subject., resource. or env", ErrInvalidPolicy, c.Field)
 		}
 		if len(c.Value) == 0 {
 			return fmt.Errorf("%w: condition %q needs a value", ErrInvalidPolicy, c.Field)

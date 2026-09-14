@@ -87,7 +87,7 @@ func securityPanel(t *testing.T) (*panel, *securityFaultHook) {
 // securityOtherSession starts an extra session for email outside the panel.
 func securityOtherSession(t *testing.T, p *panel, email string) *guard.LoginResult {
 	t.Helper()
-	res, err := p.g.Login(context.Background(), email, "password123", guard.RequestMeta{IP: "10.9.9.9", UserAgent: "<script>x</script>"})
+	res, err := p.g.Login(context.Background(), email, "tr0ub4dor-guard-42", guard.RequestMeta{IP: "10.9.9.9", UserAgent: "<script>x</script>"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestSecurityStorageFailures(t *testing.T) {
 	hook.arm("del")
 	_, _, h = p.post("/guard-admin/security/sessions/revoke-others", nil)
 	securityErr(t, h, "internal error")
-	_, _, h = p.post("/guard-admin/security/password", url.Values{"old_password": {"password123"}, "new_password": {"password456"}, "confirm_password": {"password456"}})
+	_, _, h = p.post("/guard-admin/security/password", url.Values{"old_password": {"tr0ub4dor-guard-42"}, "new_password": {"tr0ub4dor-guard-43"}, "confirm_password": {"tr0ub4dor-guard-43"}})
 	securityErr(t, h, "internal error")
 	hook.arm()
 }
@@ -307,19 +307,19 @@ func TestSecurityChangePassword(t *testing.T) {
 		return h
 	}
 
-	securityErr(t, pw("password123", "password456", "password789"), "invalid input")
-	securityErr(t, pw("wrong-password", "password456", "password456"), "invalid")
-	securityErr(t, pw("password123", "short", "short"), "8-128")
+	securityErr(t, pw("tr0ub4dor-guard-42", "tr0ub4dor-guard-43", "password789"), "invalid input")
+	securityErr(t, pw("wrong-password", "tr0ub4dor-guard-43", "tr0ub4dor-guard-43"), "invalid")
+	securityErr(t, pw("tr0ub4dor-guard-42", "short", "short"), "8-128")
 	if !securityAlive(p, other.Token) {
 		t.Fatal("failed change revoked sessions")
 	}
 
-	h := pw("password123", "password456", "password456")
+	h := pw("tr0ub4dor-guard-42", "tr0ub4dor-guard-43", "tr0ub4dor-guard-43")
 	securityFlash(t, http.StatusSeeOther, h)
 	if securityAlive(p, other.Token) || !securityAlive(p, guard.SessionToken(p.cookie.Value)) {
 		t.Fatal("sessions after password change")
 	}
-	if _, err := p.g.Login(context.Background(), "u1@example.com", "password456", guard.RequestMeta{}); err != nil {
+	if _, err := p.g.Login(context.Background(), "u1@example.com", "tr0ub4dor-guard-43", guard.RequestMeta{}); err != nil {
 		t.Fatal("new password rejected")
 	}
 }
@@ -342,7 +342,7 @@ func TestSecurityCSRFAndAudit(t *testing.T) {
 
 	p.post("/guard-admin/security/sessions/"+string(other.Session.ID)+"/revoke", nil)
 	p.post("/guard-admin/security/sessions/revoke-others", nil)
-	p.post("/guard-admin/security/password", url.Values{"old_password": {"password123"}, "new_password": {"password456"}, "confirm_password": {"password456"}})
+	p.post("/guard-admin/security/password", url.Values{"old_password": {"tr0ub4dor-guard-42"}, "new_password": {"tr0ub4dor-guard-43"}, "confirm_password": {"tr0ub4dor-guard-43"}})
 	ctx := context.Background()
 	u1, _ := p.g.Authenticate(ctx, p.cookie.Value)
 	k, _, _ := p.g.IssueAPIKey(ctx, u1, "k", []string{"*"}, nil, guard.RequestMeta{})

@@ -319,80 +319,66 @@ func (r *Postgres) ApplicablePolicies(ctx context.Context, resource, action stri
 	return r.loadPolicies(ctx, `WHERE enabled AND resource IN ($1,'*') AND action IN ($2,'*')`, resource, action)
 }
 
+// loadPolicies reads policies and their full condition trees in ONE round trip:
+// one row per (policy, group, condition), ordered so groups and conditions keep
+// their stored positions. CASE (not COALESCE) keeps NULLs in real columns a scan error.
 func (r *Postgres) loadPolicies(ctx context.Context, where string, args ...any) ([]domain.Policy, error) {
-	rows, err := r.db.Query(ctx, `SELECT id::text, name, resource, action, effect, priority, enabled FROM guard_policy `+where+` ORDER BY priority, name`, args...)
+	rows, err := r.db.Query(ctx, `WITH p AS (SELECT id, name, resource, action, effect, priority, enabled FROM guard_policy `+where+`)
+		SELECT p.id::text, p.name, p.resource, p.action, p.effect, p.priority, p.enabled,
+			COALESCE(g.id::text, ''), COALESCE(g.parent_group_id::text, ''),
+			CASE WHEN g.id IS NULL THEN 'and' ELSE g.logical_operator END,
+			CASE WHEN g.id IS NULL THEN false ELSE g.negate END,
+			c.id IS NOT NULL,
+			CASE WHEN c.id IS NULL THEN '' ELSE c.field END,
+			CASE WHEN c.id IS NULL THEN '' ELSE c.operator END,
+			CASE WHEN c.id IS NULL THEN '{}'::varchar[] ELSE c.value END
+		FROM p
+		LEFT JOIN guard_policy_condition_group g ON g.policy_id = p.id
+		LEFT JOIN guard_policy_condition c ON c.group_id = g.id
+		ORDER BY p.priority, p.name, p.id, g.position, g.id, c.position, c.id`, args...)
 	if err != nil {
 		return nil, err
 	}
-	policies := []domain.Policy{}
-	index := map[string]int{}
-	for rows.Next() {
-		var p domain.Policy
-		var effect string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Resource, &p.Action, &effect, &p.Priority, &p.Enabled); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		p.Effect = domain.Effect(effect)
-		index[p.ID] = len(policies)
-		policies = append(policies, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil || len(policies) == 0 {
-		return policies, err
-	}
-	ids := make([]string, 0, len(policies))
-	for id := range index {
-		ids = append(ids, id)
-	}
+	defer rows.Close()
 
 	type node struct {
-		policyID, parent string
-		group            *domain.ConditionGroup
+		policy int
+		parent string
+		group  *domain.ConditionGroup
 	}
+	policies := []domain.Policy{}
 	nodes := map[string]*node{}
 	order := []string{}
-	grows, err := r.db.Query(ctx, `SELECT id::text, policy_id::text, COALESCE(parent_group_id::text,''), logical_operator, negate
-		FROM guard_policy_condition_group WHERE policy_id = ANY($1::uuid[]) ORDER BY position, id`, ids)
-	if err != nil {
-		return nil, err
-	}
-	for grows.Next() {
-		var id, op string
-		n := &node{group: &domain.ConditionGroup{Conditions: []domain.Condition{}, Groups: []domain.ConditionGroup{}}}
-		if err := grows.Scan(&id, &n.policyID, &n.parent, &op, &n.group.Negate); err != nil {
-			grows.Close()
+	lastPolicy := ""
+	for rows.Next() {
+		var p domain.Policy
+		var effect, gid, parent, op, field, cop string
+		var negate, hasCond bool
+		var value []string
+		if err := rows.Scan(&p.ID, &p.Name, &p.Resource, &p.Action, &effect, &p.Priority, &p.Enabled,
+			&gid, &parent, &op, &negate, &hasCond, &field, &cop, &value); err != nil {
 			return nil, err
 		}
-		n.group.Operator = domain.LogicalOperator(op)
-		nodes[id] = n
-		order = append(order, id)
-	}
-	grows.Close()
-	if err := grows.Err(); err != nil {
-		return nil, err
-	}
-
-	crows, err := r.db.Query(ctx, `SELECT c.group_id::text, c.field, c.operator, c.value
-		FROM guard_policy_condition c JOIN guard_policy_condition_group g ON g.id = c.group_id
-		WHERE g.policy_id = ANY($1::uuid[]) ORDER BY c.position, c.id`, ids)
-	if err != nil {
-		return nil, err
-	}
-	for crows.Next() {
-		var gid, op string
-		var c domain.Condition
-		if err := crows.Scan(&gid, &c.Field, &op, &c.Value); err != nil {
-			crows.Close()
-			return nil, err
+		if p.ID != lastPolicy {
+			p.Effect = domain.Effect(effect)
+			policies = append(policies, p)
+			lastPolicy = p.ID
 		}
-		c.Operator = domain.Operator(op)
-		if n := nodes[gid]; n != nil {
-			n.group.Conditions = append(n.group.Conditions, c)
+		if gid == "" {
+			continue
+		}
+		n := nodes[gid]
+		if n == nil {
+			n = &node{policy: len(policies) - 1, parent: parent, group: &domain.ConditionGroup{
+				Operator: domain.LogicalOperator(op), Negate: negate, Conditions: []domain.Condition{}, Groups: []domain.ConditionGroup{}}}
+			nodes[gid] = n
+			order = append(order, gid)
+		}
+		if hasCond {
+			n.group.Conditions = append(n.group.Conditions, domain.Condition{Field: field, Operator: domain.Operator(cop), Value: value})
 		}
 	}
-	crows.Close()
-	if err := crows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
@@ -415,11 +401,66 @@ func (r *Postgres) loadPolicies(ctx context.Context, where string, args ...any) 
 		return g
 	}
 	for _, id := range order {
-		n := nodes[id]
-		if n.parent == "" {
+		if n := nodes[id]; n.parent == "" {
 			root := build(id, 1)
-			policies[index[n.policyID]].Root = &root
+			policies[n.policy].Root = &root
 		}
 	}
 	return policies, nil
+}
+
+const holdersSQL = `SELECT ur.user_id::text FROM guard_user_role ur
+	WHERE ur.role_id=$1 AND (ur.expires_at IS NULL OR ur.expires_at > now()) ORDER BY 1`
+
+// RoleHolders returns users holding a non-expired grant of role.
+func (r *Postgres) RoleHolders(ctx context.Context, role string) ([]string, error) {
+	var id string
+	err := r.db.QueryRow(ctx, `SELECT id FROM guard_role WHERE name=$1`, role).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return queryHolders(ctx, r.db, id)
+}
+
+type querier interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+func queryHolders(ctx context.Context, q querier, roleID string) ([]string, error) {
+	// A Query error surfaces through rows.Err, which CollectRows returns.
+	rows, _ := q.Query(ctx, holdersSQL, roleID)
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// UnassignRoleChecked locks the role row (FOR UPDATE) so concurrent checked
+// removals of the same role run one at a time, then deletes the grant only
+// when check accepts the current holders.
+func (r *Postgres) UnassignRoleChecked(ctx context.Context, userID, role string, check func([]string) error) error {
+	if userID == "" {
+		return nil
+	}
+	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		var id string
+		err := tx.QueryRow(ctx, `SELECT id FROM guard_role WHERE name=$1 FOR UPDATE`, role).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		holders, err := queryHolders(ctx, tx, id)
+		if err != nil {
+			return err
+		}
+		if err := check(holders); err != nil {
+			return err
+		}
+		// user_id::text: an id that is not valid for the host type matches nothing
+		// instead of aborting the transaction.
+		_, err = tx.Exec(ctx, `DELETE FROM guard_user_role WHERE role_id=$1 AND user_id::text=$2`, id, userID)
+		return err
+	})
 }

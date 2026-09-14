@@ -97,7 +97,7 @@ const policyExample = `{
 }`
 
 func (a *app) internalError(c *gin.Context, err error) {
-	_ = c.Error(err)
+	a.logError(c, err)
 	a.render(c, http.StatusInternalServerError, "error", "Error", "policies", map[string]string{"Message": "internal error"})
 }
 
@@ -276,7 +276,7 @@ func (a *app) policySimulate(c *gin.Context) {
 		if isDomainError(err) {
 			sim.Error = err.Error()
 		} else {
-			_ = c.Error(err)
+			a.logError(c, err)
 		}
 		a.renderPolicies(c, http.StatusUnprocessableEntity, sim)
 		return

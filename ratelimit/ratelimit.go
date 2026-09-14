@@ -1,4 +1,13 @@
 // Package ratelimit throttles requests with a Redis sliding-window log.
+//
+// Redis Cluster: every Allow runs one Lua script that touches exactly one key
+// (KEYS[1] = prefix + "rl:" + key), so the script never spans hash slots and
+// runs unchanged on Redis Cluster. Put a hash tag in the prefix or key
+// ("guard:{tenant}:") only if you need related limits on the same slot.
+//
+// Time comes from the calling process, not from Redis, so instances sharing a
+// limiter should run NTP-synchronised clocks; skew shifts window edges by the
+// skew amount.
 package ratelimit
 
 import (
@@ -42,13 +51,14 @@ type Limiter interface {
 type Redis struct {
 	rdb    redis.UniversalClient
 	prefix string
+	now    func() time.Time // test seam; time.Now in production
 }
 
 func NewRedis(rdb redis.UniversalClient, prefix string) *Redis {
 	if prefix == "" {
 		prefix = "guard:"
 	}
-	return &Redis{rdb: rdb, prefix: prefix + "rl:"}
+	return &Redis{rdb: rdb, prefix: prefix + "rl:", now: time.Now}
 }
 
 // KEYS[1] zset; ARGV: now_ms, window_ms, limit, member
@@ -77,7 +87,7 @@ func (r *Redis) Allow(ctx context.Context, key string, rule Rule) (Result, error
 	}
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-	now := time.Now().UnixMilli()
+	now := r.now().UnixMilli()
 	member := strconv.FormatInt(now, 10) + "-" + hex.EncodeToString(b[:])
 	vals, err := script.Run(ctx, r.rdb, []string{r.prefix + key},
 		now, rule.Window.Milliseconds(), rule.Limit, member).Int64Slice()

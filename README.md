@@ -43,6 +43,8 @@ Guard is a Go-native security toolkit that simplifies authentication, authorizat
 go get github.com/bakhod1r/guard
 ```
 
+Requirements: Go 1.26+, PostgreSQL 13+ (CI tests 13 and 17), Redis 6.2+ (CI tests 7).
+
 ## Quick Start
 
 Guard does **not** create a users table. It detects your existing table (`users.id` — bigint, uuid, text…) and references it.
@@ -75,13 +77,31 @@ Link accounts for users you already have: `g.CreateAccount(ctx, userID, email, p
 ### Run the example
 
 ```bash
-docker compose -f examples/gin/docker-compose.yml up -d
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/guard?sslmode=disable REDIS_ADDR=localhost:6379 \
+# whole stack in containers (app + PostgreSQL + Redis)
+docker compose -f examples/gin/docker-compose.yml up --build
+# API:   http://localhost:18080/api/auth/login
+# Panel: http://localhost:18080/guard-admin   (admin@example.com / change-me-now)
+
+# or run the app from source against the compose databases
+docker compose -f examples/gin/docker-compose.yml up -d --wait postgres redis
+DATABASE_URL=postgres://postgres:postgres@localhost:18432/guard?sslmode=disable REDIS_ADDR=localhost:18379 \
 GUARD_ADMIN_EMAIL=admin@example.com GUARD_ADMIN_PASSWORD=change-me-now GUARD_INSECURE_COOKIE=1 \
-go run ./examples/gin
-# API:   http://localhost:8080/api/auth/login
-# Panel: http://localhost:8080/guard-admin
+go run ./examples/gin   # http://localhost:8080
 ```
+
+## Configuration file and autoseed
+
+Load Guard from YAML (`${ENV}` expansion, unknown keys rejected, secrets from env) and protect host routes by derived permissions:
+
+```go
+cfg, _ := config.Load("guard.yaml")
+g, _ := cfg.Open(ctx)                                  // PostgreSQL + Redis, migrations if auto_apply
+api.Use(ginguard.Protect(g, cfg.HTTPOptions(), "/api")) // GET /api/reports/:id -> reports.read
+ao, _ := cfg.AutoseedOptions()
+_, _ = ginguard.Autoseed(ctx, g, r.Routes(), ao)       // create permissions; super role gets all, others denied
+```
+
+Key reference and caveats: [docs/configuration.md](docs/configuration.md).
 
 ## HTTP API (ginguard.Mount)
 
@@ -118,7 +138,35 @@ Rate limiting: `/auth/login` and `/auth/register` are limited per IP (default 10
   Fields: `user.*`, `resource.*`, `env.*`; values starting with `$` reference attributes (`$user.id`).
 - **Decision** — matching policies sorted by `priority` ASC; the strongest tier decides, DENY wins inside a tier;
   no policy matched → RBAC; otherwise deny (fail-closed).
-- Seeded: roles `admin` (wildcard) / `user`, self-service read policies, `blocked user denied` (priority 10).
+- Seeded: roles `super_admin` / `admin` (wildcard) / `user`, self-service read policies, `blocked user denied` (priority 10).
+
+## Super admin
+
+`super_admin` is a system wildcard role (migration `00005`). Only a super admin may grant or revoke `admin` or `super_admin`; the last super admin cannot lose the role, be banned or suspended (`409 last_super_admin`). ABAC deny policies still apply to super admins.
+
+```go
+_, _ = g.EnsureSuperAdmin(ctx, hostUserID, email, password) // idempotent bootstrap
+err := g.AssignRole(ctx, actorID, userID, "admin", nil)     // guard.ErrForbidden unless actor is super admin
+```
+
+Upgrading: existing admins are not promoted; call `EnsureSuperAdmin` once. `examples/gin` reads `GUARD_SUPERADMIN_EMAIL` / `GUARD_SUPERADMIN_PASSWORD`.
+
+## Route auto-discovery
+
+```go
+api.Use(ginguard.ProtectRoutes(g, opts, so))                  // GET /api/reports/:id -> reports.read
+res, err := ginguard.SyncRoutes(ctx, g, r.Routes(), ginguard.SyncOptions{
+	Prefix: "/api", SkipPrefixes: []string{"/api/auth", "/api/guard"},
+	// FullRoles nil = admin + super_admin; UserActions nil = ["read"] for role "user"
+	Overrides: map[string]string{"POST /api/reports/:id/approve": "reports.approve"},
+})
+```
+
+Always list Guard's own route groups (`/api/auth`, `/api/guard`, admin panel path) in `SkipPrefixes`; they are protected by `ginguard.Mount` / `adminui`. Routes are stored in `guard_route` (migration `00006`); removed routes are marked stale and existing grants are never revoked. `res` lists created, skipped and stale entries; the admin panel shows them under **Routes**.
+
+## Access cache
+
+`Config.AccessCache: &guard.AccessCacheOptions{}` (YAML `access_cache.enabled: true`) caches role grants and policies per instance and invalidates all instances through a Redis version key (default TTL 30s). Redis failures bypass to PostgreSQL. Call `g.InvalidateAccess(ctx)` after changes made outside Guard (e.g. deleting a host user); `g.AccessStats()` exposes hit/miss counters.
 
 ## Layout (DDD)
 
@@ -134,11 +182,62 @@ Rate limiting: `/auth/login` and `/auth/register` are limited per IP (default 10
 ## Testing
 
 ```bash
-go test ./...
-# integration (PostgreSQL + Redis)
-GUARD_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/guard?sslmode=disable \
-GUARD_TEST_REDIS_ADDR=localhost:6379 go test -race -cover ./...   # 100% statements
+make test               # unit tests; integration tests skip without services
+make test-integration   # starts PostgreSQL + Redis (compose), go test -race with coverage
+make cover              # fails if any package is below 100.0% statements
+make lint vuln          # golangci-lint v2 (.golangci.yml), govulncheck
 ```
+
+Manual integration run against your own services:
+
+```bash
+GUARD_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:18432/guard?sslmode=disable \
+GUARD_TEST_REDIS_ADDR=localhost:18379 \
+go test -count=1 -race -covermode=atomic -coverprofile=coverage.out $(go list ./... | grep -v /examples/)
+bash scripts/coverage-gate.sh coverage.out
+```
+
+CI (`.github/workflows/ci.yml`) runs the same gates on PostgreSQL 13 and 17.
+
+## Audit buffering (Redis → PostgreSQL)
+
+By default audit events are written to PostgreSQL synchronously (or in-process with `AsyncAudit`). For high write volume, queue them in Redis and batch-insert:
+
+```go
+g, err := guard.New(ctx, guard.Config{
+    // ...
+    AuditBuffer: guard.AuditBuffer{
+        Enabled:   true,
+        BatchSize: 500,         // default 500
+        Interval:  time.Second, // default 1s
+    },
+})
+defer g.Close(ctx) // flushes the queue on shutdown
+```
+
+- Events are pushed to `<prefix>{audit}:queue`; one flusher across all instances holds `<prefix>{audit}:lock` (30s TTL, extended per batch; hash tag keeps keys in one Redis Cluster slot) and writes batches via `RecordBatch` (`ON CONFLICT (id) DO NOTHING`, so retries are idempotent).
+- A failed PostgreSQL write leaves the batch queued for the next tick; undecodable entries, and single events PostgreSQL rejects while the rest of the batch succeeds, move to `<prefix>{audit}:dead`.
+- If Redis is unreachable, `Record` falls back to a direct synchronous write.
+- When `Enabled`, `AsyncAudit` is ignored.
+
+Trade-offs vs `AsyncAudit`: queued events survive process restarts and are shared across instances; but `List` (and `GET /guard/audit`) shows only flushed events, so reads lag by up to `Interval`, and a PostgreSQL outage grows the Redis list — size Redis memory and alert on queue length.
+
+## Production checklist
+
+Full list with rationale: [docs/production.md](docs/production.md). Minimum before going live:
+
+- TLS; `InsecureCookie` false (default) in `ginguard` and `adminui`.
+- `gin.Engine.SetTrustedProxies` set to your load balancers — otherwise `X-Forwarded-For` bypasses per-IP login limits.
+- `adminui.Options.CSRFSecret` from a secret store, identical on all instances.
+- Cookie clients send `X-Guard-CSRF: 1` (or a trusted `Origin`) on unsafe requests; set `TrustedOrigins` for cross-origin SPAs.
+- One `super_admin` bootstrapped with `EnsureSuperAdmin`; `GUARD_SUPERADMIN_*` removed afterwards.
+- Redis HA with auth/TLS; PostgreSQL pool sized per instance count; `sslmode=verify-full`.
+- Migrations committed and applied by one release job (Guard holds a PostgreSQL advisory lock during `Migrate`).
+- Audit retention job, backups with rehearsed restore, key/secret rotation.
+- Logs redact `Authorization`, `X-API-Key`, cookies and credential request bodies.
+- Admin panel behind VPN / IP allowlist.
+
+Also: [configuration](docs/configuration.md) · [architecture](docs/architecture.md) · [HTTP API and error codes](docs/api.md) · [admin panel](docs/admin-panel.md) · [security policy](SECURITY.md) · [changelog](CHANGELOG.md).
 
 ## Core Components
 
@@ -164,10 +263,13 @@ Most Go applications combine multiple libraries for sessions, authorization, API
 - [x] Rate limiting
 - [x] Audit logging
 - [ ] Service-to-service authentication
-- [ ] Admin dashboard
+- [x] Admin dashboard
 - [ ] Security analytics
 - [x] Policy engine
 - [ ] Plugin ecosystem
+- [x] Migration advisory lock (multi-replica `Migrate`)
+- [ ] Echo / Fiber / Chi / net/http adapters
+- [ ] v1.0 API freeze
 
 ## License
 

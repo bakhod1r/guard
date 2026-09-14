@@ -38,7 +38,7 @@ func TestOpenRedirectBlocked(t *testing.T) {
 	p := newPanel(t)
 	p.account("1", "admin@example.com", true)
 	for _, next := range []string{"https://evil.example", "//evil.example", "/other", "/guard-admin/../x"} {
-		code, _, h := p.post("/guard-admin/login", url.Values{"email": {"admin@example.com"}, "password": {"password123"}, "next": {next}})
+		code, _, h := p.post("/guard-admin/login", url.Values{"email": {"admin@example.com"}, "password": {"tr0ub4dor-guard-42"}, "next": {next}})
 		if code != http.StatusSeeOther || location(h) != "/guard-admin" {
 			t.Fatalf("next %q redirected to %q", next, location(h))
 		}

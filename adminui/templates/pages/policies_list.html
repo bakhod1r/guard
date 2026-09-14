@@ -3,7 +3,7 @@
 <div class="card scroll">
 {{if $d.Policies}}
 <table>
-<caption class="mute" style="text-align:left;padding-bottom:8px">Evaluated by priority (lower wins); deny overrides allow within a tier.</caption>
+<caption class="mute left">Evaluated by priority (lower wins); deny overrides allow within a tier.</caption>
 <thead><tr><th scope="col">Name</th><th scope="col">Target</th><th scope="col">Effect</th><th scope="col">Priority</th><th scope="col">Enabled</th><th scope="col">Conditions</th><th scope="col"><span class="mute">Actions</span></th></tr></thead>
 <tbody>
 {{range $d.Policies}}
@@ -14,9 +14,9 @@
 <td>{{.Priority}}</td>
 <td>{{if .Enabled}}<span class="badge ok">on</span>{{else}}<span class="badge">off</span>{{end}}</td>
 <td class="mono">{{.Summary}}</td>
-<td style="white-space:nowrap">{{if $d.CanWrite}}
+<td class="nowrap">{{if $d.CanWrite}}
 <form class="inline" method="post" action="{{$.Base}}/policies/{{.ID}}/toggle"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm">{{if .Enabled}}Disable{{else}}Enable{{end}}</button></form>
-<form class="inline" method="post" action="{{$.Base}}/policies/{{.ID}}/delete" onsubmit="return confirm('Delete this policy?')"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Delete</button></form>
+<form class="inline" method="post" action="{{$.Base}}/policies/{{.ID}}/delete" data-confirm="Delete this policy?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Delete</button></form>
 {{end}}</td>
 </tr>
 {{end}}
@@ -39,8 +39,8 @@
 <div class="field"><label for="sim-id">Resource ID</label><input id="sim-id" name="resource_id" value="{{.ResourceID}}"></div>
 </div>
 <div class="grid">
-<div class="field"><label for="sim-attrs">Resource attributes (JSON object)</label><textarea id="sim-attrs" name="resource_attributes" style="min-height:80px" placeholder='{"owner_id":"42"}'>{{.Attributes}}</textarea></div>
-<div class="field"><label for="sim-env">Environment (JSON object)</label><textarea id="sim-env" name="env" style="min-height:80px" placeholder='{"ip":"10.0.0.1"}'>{{.Env}}</textarea></div>
+<div class="field"><label for="sim-attrs">Resource attributes (JSON object)</label><textarea id="sim-attrs" name="resource_attributes" class="short" placeholder='{"owner_id":"42"}'>{{.Attributes}}</textarea></div>
+<div class="field"><label for="sim-env">Environment (JSON object)</label><textarea id="sim-env" name="env" class="short" placeholder='{"ip":"10.0.0.1"}'>{{.Env}}</textarea></div>
 </div>
 <button class="btn primary">Evaluate</button>
 </form>

@@ -21,7 +21,15 @@ var (
 	ErrInvalidName   = errors.New("apikey: name must be 1-100 characters")
 	ErrInvalidScope  = errors.New("apikey: scope must be resource.action, resource.* or *")
 	ErrNoScopes      = errors.New("apikey: at least one scope is required")
+	ErrTooManyScopes = errors.New("apikey: at most 50 scopes are allowed")
 	ErrBadExpiry     = errors.New("apikey: expires_at must be in the future")
+)
+
+const (
+	// MaxScopes bounds the scopes array per key (request size, row size, Allows cost).
+	MaxScopes = 50
+	// MaxScopeLength matches the guard_api_key.scopes VARCHAR(129) column: 64 + "." + 64.
+	MaxScopeLength = 129
 )
 
 // TokenPrefix marks Guard API keys so they are recognisable in logs and secret scanners.
@@ -58,6 +66,9 @@ func validScope(s string) bool {
 	if s == "*" {
 		return true
 	}
+	if len(s) > MaxScopeLength {
+		return false
+	}
 	res, act, ok := strings.Cut(s, ".")
 	return ok && scopePart.MatchString(res) && (act == "*" || scopePart.MatchString(act))
 }
@@ -70,6 +81,9 @@ func New(id, userID, name string, scopes []string, expiresAt *time.Time, now tim
 	}
 	if len(scopes) == 0 {
 		return nil, "", ErrNoScopes
+	}
+	if len(scopes) > MaxScopes {
+		return nil, "", ErrTooManyScopes
 	}
 	seen := map[string]bool{}
 	clean := make([]string, 0, len(scopes))

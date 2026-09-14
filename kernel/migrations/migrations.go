@@ -29,12 +29,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
 // VersionTable tracks applied Guard migrations separately from the host's goose table.
 const VersionTable = "guard_schema_version"
 
 const tmplExt = ".tmpl"
+
+// LockID is the PostgreSQL advisory lock key held while Guard migrations run.
+// It differs from goose's default key so a host application running its own
+// goose migrations (possibly while calling Guard's) never waits on Guard.
+const LockID int64 = 0x6775617264_6d67 // "guard" "mg"
+
+// newSessionLocker is a variable only so tests can inject a failing locker.
+var newSessionLocker = func() (lock.SessionLocker, error) {
+	return lock.NewPostgresSessionLocker(lock.WithLockID(LockID))
+}
 
 //go:embed sql/*.sql.tmpl
 var embedded embed.FS
@@ -205,7 +216,7 @@ func Write(dir string, ref UserRef) ([]string, error) {
 }
 
 func writeFS(dir string, fsys fs.FS) ([]string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //nolint:gosec // migration files are committed source, must be readable by the host repo
 		return nil, err
 	}
 	entries, err := fs.ReadDir(fsys, ".")
@@ -224,7 +235,7 @@ func writeFS(dir string, fsys fs.FS) ([]string, error) {
 		if err != nil {
 			return written, err
 		}
-		if err := os.WriteFile(dst, b, 0o644); err != nil {
+		if err := os.WriteFile(dst, b, 0o644); err != nil { //nolint:gosec // SQL migrations are non-secret source files
 			return written, err
 		}
 		written = append(written, dst)
@@ -239,7 +250,7 @@ func Up(ctx context.Context, pool *pgxpool.Pool, dir string, ref UserRef) error 
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := p.Up(ctx); err != nil {
 		return fmt.Errorf("guard migrations: %w", err)
 	}
@@ -253,7 +264,7 @@ func Down(ctx context.Context, pool *pgxpool.Pool, dir string, ref UserRef) erro
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if _, err := p.DownTo(ctx, 0); err != nil {
 		return fmt.Errorf("guard migrations: %w", err)
 	}
@@ -270,11 +281,17 @@ func provider(pool *pgxpool.Pool, dir string, ref UserRef) (*goose.Provider, *sq
 			return nil, nil, err
 		}
 	}
+	// Replicas starting together serialise on a session advisory lock, so each
+	// migration is applied exactly once.
+	locker, err := newSessionLocker()
+	if err != nil {
+		return nil, nil, fmt.Errorf("guard migrations: session locker: %w", err)
+	}
 	db := stdlib.OpenDBFromPool(pool)
 	p, err := goose.NewProvider(goose.DialectPostgres, db, fsys,
-		goose.WithTableName(VersionTable), goose.WithDisableGlobalRegistry(true))
+		goose.WithTableName(VersionTable), goose.WithDisableGlobalRegistry(true), goose.WithSessionLocker(locker))
 	if err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, nil, err
 	}
 	return p, db, nil

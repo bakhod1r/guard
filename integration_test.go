@@ -2,11 +2,15 @@ package guard_test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
@@ -26,19 +30,11 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 		t.Skip("GUARD_TEST_DATABASE_URL / GUARD_TEST_REDIS_ADDR not set")
 	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer pool.Close()
+	pool := integrationDatabase(t, dsn)
 	rdb := redis.NewClient(&redis.Options{Addr: addr})
 	defer rdb.Close()
 
 	// The host application owns its user table; Guard only references it.
-	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS guard_schema_version, guard_audit_event, guard_api_key, guard_policy_condition,
-		guard_policy_condition_group, guard_policy, guard_user_role, guard_role_permission, guard_permission, guard_role, guard_account, app_users CASCADE`); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := pool.Exec(ctx, `CREATE TABLE app_users (id BIGSERIAL PRIMARY KEY, full_name TEXT NOT NULL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +46,7 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 		return id
 	}
 
-	g, err := guard.New(guard.Config{DB: pool, Redis: rdb, RedisPrefix: "guard-it:", UserTable: "app_users"})
+	g, err := guard.New(guard.Config{DB: pool, Redis: rdb, RedisPrefix: "guard-it-" + pool.Config().ConnConfig.Database + ":", UserTable: "app_users", AccessCache: &guard.AccessCacheOptions{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +55,12 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 		t.Fatalf("detect: %+v %v", ref, err)
 	}
 	dir := filepath.Join(t.TempDir(), "migrations", "guard")
-	if files, err := g.WriteMigrations(ctx, dir); err != nil || len(files) != 3 {
+	rendered, err := migrations.Render(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := fs.Glob(rendered, "*.sql")
+	if files, err := g.WriteMigrations(ctx, dir); err != nil || len(files) != len(want) || len(want) < 4 {
 		t.Fatalf("write migrations: %v %v", files, err)
 	}
 	if err := g.Migrate(ctx, dir); err != nil {
@@ -80,25 +81,25 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 	}
 
 	rootID := hostUser("Root")
-	admin, err := g.EnsureAdmin(ctx, rootID, "root@example.com", "root-password")
+	admin, err := g.EnsureAdmin(ctx, rootID, "root@example.com", "tr0ub4dor-guard-42-root")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.EnsureAdmin(ctx, rootID, "root@example.com", "root-password"); err != nil {
+	if _, err := g.EnsureAdmin(ctx, rootID, "root@example.com", "tr0ub4dor-guard-42-root"); err != nil {
 		t.Fatalf("EnsureAdmin not idempotent: %v", err)
 	}
-	if _, err := g.CreateAccount(ctx, "999999", "ghost@example.com", "password123", nil, guard.RequestMeta{}); err == nil {
+	if _, err := g.CreateAccount(ctx, "999999", "ghost@example.com", "tr0ub4dor-guard-42", nil, guard.RequestMeta{}); err == nil {
 		t.Fatal("account for missing host user accepted")
 	}
-	if _, err := g.CreateAccount(ctx, "not-a-number", "ghost@example.com", "password123", nil, guard.RequestMeta{}); err == nil {
+	if _, err := g.CreateAccount(ctx, "not-a-number", "ghost@example.com", "tr0ub4dor-guard-42", nil, guard.RequestMeta{}); err == nil {
 		t.Fatal("account for invalid host id accepted")
 	}
-	u, err := g.CreateAccount(ctx, hostUser("Ali"), "user@example.com", "password123", map[string]any{"department": "sales"}, guard.RequestMeta{IP: "127.0.0.1"})
+	u, err := g.CreateAccount(ctx, hostUser("Ali"), "user@example.com", "tr0ub4dor-guard-42", map[string]any{"department": "sales"}, guard.RequestMeta{IP: "127.0.0.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	res, err := g.Login(ctx, "user@example.com", "password123", guard.RequestMeta{IP: "127.0.0.1", UserAgent: "test"})
+	res, err := g.Login(ctx, "user@example.com", "tr0ub4dor-guard-42", guard.RequestMeta{IP: "127.0.0.1", UserAgent: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,9 +198,19 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 		t.Fatalf("audit: %d %v", len(events), err)
 	}
 
-	// Host user deletion cascades into Guard.
+	if st, ok := g.AccessStats(); !ok || st.Hits+st.Misses == 0 {
+		t.Fatalf("access cache unused: %+v %v", st, ok)
+	}
+
+	// Host user deletion cascades into Guard; cached grants are dropped.
 	if _, err := pool.Exec(ctx, `DELETE FROM app_users WHERE id=$1`, string(u.ID)); err != nil {
 		t.Fatal(err)
+	}
+	if err := g.InvalidateAccess(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if grants, err := g.Access.Grants(ctx, string(u.ID)); err != nil || len(grants) != 0 {
+		t.Fatalf("grants after host deletion: %v %v", grants, err)
 	}
 	if _, err := g.Identity.User(ctx, u.ID); err == nil {
 		t.Fatal("account survived host user deletion")
@@ -212,4 +223,41 @@ func TestIntegrationPostgresRedis(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM app_users`).Scan(&hostRows); err != nil || hostRows != 1 {
 		t.Fatalf("host table touched by down: %d %v", hostRows, err)
 	}
+}
+
+// integrationDatabase creates guard_it_<random> so the test never touches
+// tables in the shared database, and drops it WITH (FORCE) afterwards.
+func integrationDatabase(t *testing.T, dsn string) *pgxpool.Pool {
+	t.Helper()
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	name := "guard_it_" + hex.EncodeToString(b)
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+		admin.Close()
+		t.Fatal(err)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ConnConfig.Database = name
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		pool.Close()
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if _, err := admin.Exec(c, "DROP DATABASE IF EXISTS "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)"); err != nil {
+			t.Errorf("drop %s: %v", name, err)
+		}
+		admin.Close()
+	})
+	return pool
 }

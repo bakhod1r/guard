@@ -8,7 +8,14 @@ package guard
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"log/slog"
+	"math/rand/v2"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -48,6 +55,9 @@ type (
 	AuditEvent    = audit.Event
 	APIKey        = apikeydomain.Key
 	APIKeyToken   = apikeydomain.Token
+	// AccessCacheOptions configures Config.AccessCache.
+	AccessCacheOptions = accessinfra.CacheOptions
+	AccessCacheStats   = accessinfra.CacheStats
 )
 
 var ErrSessionRequired = errors.New("guard: this operation requires a session, not an API key")
@@ -57,9 +67,9 @@ type Config struct {
 	Redis redis.UniversalClient
 	// RedisPrefix namespaces session keys. Default "guard:".
 	RedisPrefix string
-	// Session lifetime. Zero value uses 30m idle / 7d absolute.
+	// Session lifetime. Each zero field uses its default (30m idle / 7d absolute).
 	Session SessionPolicy
-	// Lockout for password guessing. Zero value uses 5 attempts / 15m.
+	// Lockout for password guessing. Each zero field uses its default (5 attempts / 15m).
 	Lockout Lockout
 	// DefaultRole is assigned on CreateAccount. Default "user"; "-" disables.
 	DefaultRole string
@@ -68,6 +78,66 @@ type Config struct {
 	UserTable string
 	// UserIDColumn is the primary key (or unique) column of UserTable. Default "id".
 	UserIDColumn string
+	// Logger receives operational events (audit write failures at Warn, failed
+	// logins at Info). Raw emails, passwords and tokens are never logged.
+	// Default slog.Default().
+	Logger *slog.Logger
+	// AsyncAudit > 0 writes audit events through a non-blocking buffer of this
+	// size; overflow is dropped and counted. 0 (default) writes synchronously.
+	// Call Guard.Close on shutdown to flush.
+	AsyncAudit int
+	// AuditBuffer queues audit events in Redis and batch-writes them to
+	// PostgreSQL. When Enabled, AsyncAudit is ignored.
+	AuditBuffer AuditBuffer
+	// AccessCache enables the in-process role/policy cache for authorization
+	// (invalidated cluster-wide through Redis). nil (default) disables it.
+	// Empty Prefix uses RedisPrefix; nil OnError logs at Warn.
+	AccessCache *accessinfra.CacheOptions
+	// PasswordHashParams overrides argon2id parameters; values below the OWASP
+	// floor make New fail. nil uses secure defaults. Legacy bcrypt hashes are
+	// always verified and upgraded on login.
+	PasswordHashParams *PasswordHashParams
+}
+
+// PasswordHashParams are argon2id parameters (Memory in KiB).
+type PasswordHashParams struct {
+	Memory, Time    uint32
+	Threads         uint8
+	KeyLen, SaltLen uint32
+}
+
+func passwordHasher(p *PasswordHashParams) (*identityinfra.MultiHasher, error) {
+	if p == nil {
+		return identityinfra.NewMultiHasher(nil), nil
+	}
+	a, err := identityinfra.NewArgon2HasherWithParams(p.Memory, p.Time, p.Threads, p.KeyLen, p.SaltLen)
+	if err != nil {
+		return nil, err
+	}
+	return identityinfra.NewMultiHasher(a), nil
+}
+
+func accessCacheOptions(o accessinfra.CacheOptions, prefix string, logger *slog.Logger) accessinfra.CacheOptions {
+	if o.Prefix == "" {
+		o.Prefix = prefix
+	}
+	if o.OnError == nil {
+		o.OnError = func(err error) {
+			logger.Warn("guard: access cache redis failure, bypassing cache", "error", err.Error())
+		}
+	}
+	return o
+}
+
+// AuditBuffer configures the Redis-backed audit queue. Events are pushed to the
+// Redis list <RedisPrefix>audit:queue and flushed every Interval (default 1s)
+// in batches of BatchSize (default 500). The queue survives process restarts
+// and is shared by every instance. When Redis is unavailable events fall back
+// to direct PostgreSQL writes. Call Guard.Close on shutdown to drain it.
+type AuditBuffer struct {
+	Enabled   bool
+	BatchSize int
+	Interval  time.Duration
 }
 
 type Guard struct {
@@ -80,7 +150,13 @@ type Guard struct {
 	Limiter ratelimit.Limiter
 
 	db          *pgxpool.Pool
+	redis       redis.UniversalClient
+	logger      *slog.Logger
+	asyncAudit  *audit.Async
+	auditBuffer *audit.RedisBuffer
 	defaultRole string
+	accessCache *accessinfra.Cached
+	cachePrefix string
 	userTable   string
 	userColumn  string
 }
@@ -89,18 +165,49 @@ func New(cfg Config) (*Guard, error) {
 	if cfg.DB == nil || cfg.Redis == nil {
 		return nil, errors.New("guard: Config.DB and Config.Redis are required")
 	}
-	store := accessinfra.NewPostgres(cfg.DB)
+	hasher, err := passwordHasher(cfg.PasswordHashParams)
+	if err != nil {
+		return nil, err
+	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	pg := accessinfra.NewPostgres(cfg.DB)
+	var roles accessdomain.RoleRepository = pg
+	var policies accessdomain.PolicyRepository = pg
+	var cached *accessinfra.Cached
+	var cachePrefix string
+	if cfg.AccessCache != nil {
+		opts := accessCacheOptions(*cfg.AccessCache, cfg.RedisPrefix, logger)
+		cached = accessinfra.NewCached(pg, pg, cfg.Redis, opts)
+		roles, policies, cachePrefix = cached, cached, opts.Prefix
+		if cachePrefix == "" {
+			cachePrefix = "guard:"
+		}
+	}
+	var auditLog audit.Log = audit.NewPostgres(cfg.DB)
+	var buffer *audit.RedisBuffer
+	if cfg.AuditBuffer.Enabled {
+		buffer = audit.NewRedisBuffer(cfg.Redis, auditLog, audit.RedisBufferConfig{
+			Prefix: cfg.RedisPrefix, BatchSize: cfg.AuditBuffer.BatchSize,
+			Interval: cfg.AuditBuffer.Interval, Logger: logger,
+		})
+		auditLog = buffer
+		cfg.AsyncAudit = 0
+	}
 	g := Build(Repositories{
 		Users:    identityinfra.NewPostgresUsers(cfg.DB),
-		Hasher:   identityinfra.NewArgon2Hasher(),
+		Hasher:   hasher,
 		Sessions: sessioninfra.NewRedisSessions(cfg.Redis, cfg.RedisPrefix),
-		Roles:    store,
-		Policies: store,
-		Audit:    audit.NewPostgres(cfg.DB),
+		Roles:    roles,
+		Policies: policies,
+		Audit:    auditLog,
 		APIKeys:  apikeyinfra.NewPostgres(cfg.DB),
 		Limiter:  ratelimit.NewRedis(cfg.Redis, cfg.RedisPrefix),
 	}, cfg)
-	g.db = cfg.DB
+	g.db, g.redis, g.auditBuffer = cfg.DB, cfg.Redis, buffer
+	g.accessCache, g.cachePrefix = cached, cachePrefix
 	return g, nil
 }
 
@@ -117,12 +224,8 @@ type Repositories struct {
 }
 
 func Build(r Repositories, cfg Config) *Guard {
-	if cfg.Session == (SessionPolicy{}) {
-		cfg.Session = sessiondomain.DefaultPolicy()
-	}
-	if cfg.Lockout == (Lockout{}) {
-		cfg.Lockout = identitydomain.DefaultLockout()
-	}
+	cfg.Session = sessionPolicy(cfg.Session)
+	cfg.Lockout = lockoutPolicy(cfg.Lockout)
 	switch cfg.DefaultRole {
 	case "":
 		cfg.DefaultRole = "user"
@@ -135,7 +238,17 @@ func Build(r Repositories, cfg Config) *Guard {
 	if cfg.UserIDColumn == "" {
 		cfg.UserIDColumn = "id"
 	}
+	if cfg.Logger == nil {
+		cfg.Logger = slog.Default()
+	}
+	var asyncAudit *audit.Async
+	if cfg.AsyncAudit > 0 && r.Audit != nil {
+		asyncAudit = audit.NewAsync(r.Audit, cfg.AsyncAudit, cfg.Logger)
+		r.Audit = asyncAudit
+	}
 	return &Guard{
+		logger:      cfg.Logger,
+		asyncAudit:  asyncAudit,
 		userTable:   cfg.UserTable,
 		userColumn:  cfg.UserIDColumn,
 		Identity:    identityapp.NewService(r.Users, r.Hasher, cfg.Lockout),
@@ -146,6 +259,70 @@ func Build(r Repositories, cfg Config) *Guard {
 		Limiter:     r.Limiter,
 		defaultRole: cfg.DefaultRole,
 	}
+}
+
+// sessionPolicy fills each zero field separately: a policy that only sets
+// MaxPerUser must not get zero timeouts (sessions would expire immediately).
+func sessionPolicy(p SessionPolicy) SessionPolicy {
+	def := sessiondomain.DefaultPolicy()
+	if p.IdleTimeout == 0 {
+		p.IdleTimeout = def.IdleTimeout
+	}
+	if p.AbsoluteTimeout == 0 {
+		p.AbsoluteTimeout = def.AbsoluteTimeout
+	}
+	return p
+}
+
+func lockoutPolicy(l Lockout) Lockout {
+	def := identitydomain.DefaultLockout()
+	if l.MaxAttempts == 0 {
+		l.MaxAttempts = def.MaxAttempts
+	}
+	if l.Duration == 0 {
+		l.Duration = def.Duration
+	}
+	return l
+}
+
+// AccessStats returns access cache counters; ok is false when Config.AccessCache is nil.
+func (g *Guard) AccessStats() (stats accessinfra.CacheStats, ok bool) {
+	if g.accessCache == nil {
+		return stats, false
+	}
+	return g.accessCache.Stats(), true
+}
+
+// InvalidateAccess drops cached role grants and policies on every instance.
+// Call it after changes that bypass Guard, e.g. deleting a host user (ON
+// DELETE CASCADE). No-op without Config.AccessCache.
+func (g *Guard) InvalidateAccess(ctx context.Context) error {
+	if g.accessCache == nil {
+		return nil
+	}
+	key := g.cachePrefix + "access:version"
+	ctx = context.WithoutCancel(ctx)
+	// Same protocol as accessinfra.Cached: seed a random base so a flushed key
+	// never reuses an old generation, then INCR.
+	err := g.redis.SetNX(ctx, key, strconv.FormatUint(rand.Uint64()>>2, 10), 0).Err() //nolint:gosec // cache generation seed, not security-sensitive
+	if err == nil {
+		err = g.redis.Incr(ctx, key).Err()
+	}
+	if err != nil {
+		return fmt.Errorf("guard: invalidate access cache: %w", err)
+	}
+	return nil
+}
+
+// RotateSession replaces a session token (call after login or privilege
+// change) and records session.rotate. The old token stops working.
+func (g *Guard) RotateSession(ctx context.Context, token SessionToken) (*Session, SessionToken, error) {
+	s, tok, err := g.Sessions.Rotate(ctx, token)
+	if err != nil {
+		return nil, "", err
+	}
+	g.record(ctx, audit.Event{ActorID: s.UserID, Action: "session.rotate", Target: s.UserID, Success: true})
+	return s, tok, nil
 }
 
 // UserRef inspects the database and resolves the host user table and its id column type.
@@ -184,8 +361,57 @@ type RequestMeta struct {
 
 func (g *Guard) record(ctx context.Context, e audit.Event) {
 	if g.Audit != nil {
-		_ = g.Audit.Record(ctx, e)
+		if err := g.Audit.Record(ctx, e); err != nil {
+			g.logger.WarnContext(ctx, "guard: audit write failed", "action", e.Action, "target", e.Target, "error", err.Error())
+		}
 	}
+}
+
+// healthTimeout bounds each backend ping in Health.
+const healthTimeout = 2 * time.Second
+
+// Health pings PostgreSQL and Redis, each with a 2s timeout. It returns an
+// error naming every unhealthy backend, or when none is configured.
+func (g *Guard) Health(ctx context.Context) error {
+	if g.db == nil && g.redis == nil {
+		return errors.New("guard: no backends configured")
+	}
+	var errs []error
+	if g.db != nil {
+		c, cancel := context.WithTimeout(ctx, healthTimeout)
+		if err := g.db.Ping(c); err != nil {
+			errs = append(errs, fmt.Errorf("guard: postgres: %w", err))
+		}
+		cancel()
+	}
+	if g.redis != nil {
+		c, cancel := context.WithTimeout(ctx, healthTimeout)
+		if err := g.redis.Ping(c).Err(); err != nil {
+			errs = append(errs, fmt.Errorf("guard: redis: %w", err))
+		}
+		cancel()
+	}
+	return errors.Join(errs...)
+}
+
+// Close flushes buffered audit events (Config.AsyncAudit, Config.AuditBuffer)
+// until done or ctx expires. It never closes the caller's database pool or
+// Redis client.
+func (g *Guard) Close(ctx context.Context) error {
+	var errs []error
+	if g.asyncAudit != nil {
+		errs = append(errs, g.asyncAudit.Close(ctx))
+	}
+	if g.auditBuffer != nil {
+		errs = append(errs, g.auditBuffer.Close(ctx))
+	}
+	return errors.Join(errs...)
+}
+
+// emailFingerprint lets operators correlate failed logins without storing the address.
+func emailFingerprint(email string) string {
+	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(email))))
+	return hex.EncodeToString(sum[:])[:16]
 }
 
 // CreateAccount gives an existing host user (userID from UserTable) login
@@ -227,6 +453,7 @@ func (g *Guard) Login(ctx context.Context, email, password string, meta RequestM
 	if err != nil {
 		g.record(ctx, audit.Event{Action: "auth.login", Success: false, IP: meta.IP, UserAgent: meta.UserAgent,
 			Metadata: map[string]any{"email": email, "error": err.Error()}})
+		g.logger.InfoContext(ctx, "guard: login failed", "email_sha256", emailFingerprint(email), "ip", meta.IP, "error", err.Error())
 		return nil, err
 	}
 	s, tok, err := g.Sessions.Start(ctx, sessionapp.StartInput{UserID: string(u.ID), IP: meta.IP, UserAgent: meta.UserAgent})
@@ -323,6 +550,9 @@ func (g *Guard) Authorize(ctx context.Context, p *Principal, action string, res 
 
 // SetUserStatus changes account status; blocking also revokes every session.
 func (g *Guard) SetUserStatus(ctx context.Context, actorID, userID string, status Status) error {
+	if err := g.checkSuperAdminStatus(ctx, userID, status); err != nil {
+		return err
+	}
 	if err := g.Identity.SetStatus(ctx, identitydomain.UserID(userID), status); err != nil {
 		return err
 	}

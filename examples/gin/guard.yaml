@@ -1,0 +1,25 @@
+# Guard config for the Gin example. Secrets come from the environment.
+# Full documented template: guard.example.yaml at the repository root.
+database: { url: "${DATABASE_URL}" }
+redis: { addr: "${REDIS_ADDR}", password: "${REDIS_PASSWORD}", db: 0, prefix: "guard:" }
+user_table: users
+user_id_column: id
+default_role: user
+session: { idle: 30m, absolute: 168h }
+lockout: { attempts: 5, window: 15m }
+audit: { async_buffer: 0 }
+migrations: { dir: ./migrations/guard, auto_apply: true }
+http:
+  cookie_name: guard_session
+  insecure_cookie: false # GUARD_INSECURE_COOKIE=1 overrides for local HTTP
+  auth_path: /auth
+  admin_path: /guard
+  trusted_origins: []
+  max_body_bytes: 1048576
+  hsts: false
+  auth_rate_limit: { limit: 10, window: 1m }
+autoseed:
+  enabled: true
+  prefix: /api
+  super_role: admin
+  exclude: [/api/auth, /api/guard, /guard-admin]

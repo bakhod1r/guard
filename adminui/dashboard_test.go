@@ -103,7 +103,7 @@ func TestDashboardAdminSeesStats(t *testing.T) {
 		t.Fatalf("code %d", code)
 	}
 	dashContainsAll(t, body, "admin@example.com", `data-stat="roles"`, `data-stat="permissions"`,
-		`data-stat="policies"`, `data-stat="sessions"`, `data-stat="apikeys"`, "<b>2</b>", "<b>14</b>", "<b>3</b>", "<b>1</b>", "<b>0</b>",
+		`data-stat="policies"`, `data-stat="sessions"`, `data-stat="apikeys"`, "<b>3</b>", "<b>14</b>", "<b>3</b>", "<b>1</b>", "<b>0</b>",
 		`href="/guard-admin/roles"`, `href="/guard-admin/audit"`)
 }
 

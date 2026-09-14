@@ -104,6 +104,10 @@ func usersPanel(t *testing.T) *panel {
 	adminui.Mount(r, g, adminui.Options{InsecureCookie: true})
 	p := &panel{t: t, g: g, r: r}
 	p.account("1", "admin@example.com", true)
+	// super admin: role changes to admin/super_admin require it
+	if _, err := g.EnsureSuperAdmin(context.Background(), "1", "admin@example.com", "tr0ub4dor-guard-42"); err != nil {
+		t.Fatal(err)
+	}
 	p.account("2", "user@example.com", false)
 	return p
 }
@@ -177,7 +181,7 @@ func TestUsersDetailAccess(t *testing.T) {
 		t.Fatalf("list as user: %d", code)
 	}
 	posts := map[string]url.Values{
-		"/guard-admin/users/new":                   {"user_id": {"9"}, "email": {"x@example.com"}, "password": {"password123"}},
+		"/guard-admin/users/new":                   {"user_id": {"9"}, "email": {"x@example.com"}, "password": {"tr0ub4dor-guard-42"}},
 		"/guard-admin/users/1/status":              {"status": {"banned"}},
 		"/guard-admin/users/1/attributes":          {"attributes": {"{}"}},
 		"/guard-admin/users/1/password":            {"password": {"password999"}},
@@ -232,12 +236,12 @@ func TestUsersDetailAdmin(t *testing.T) {
 func TestUsersCreate(t *testing.T) {
 	p := usersPanel(t)
 	usersLogin(p, "admin@example.com")
-	code, _, h := p.post("/guard-admin/users/new", url.Values{"user_id": {"77"}, "email": {"new@example.com"}, "password": {"password123"}})
+	code, _, h := p.post("/guard-admin/users/new", url.Values{"user_id": {"77"}, "email": {"new@example.com"}, "password": {"tr0ub4dor-guard-42"}})
 	usersExpect(t, "create", code, h, "/users/77", "flash=")
 	if _, err := p.g.Identity.User(context.Background(), "77"); err != nil {
 		t.Fatal(err)
 	}
-	code, _, h = p.post("/guard-admin/users/new", url.Values{"user_id": {"78"}, "email": {"bad"}, "password": {"password123"}})
+	code, _, h = p.post("/guard-admin/users/new", url.Values{"user_id": {"78"}, "email": {"bad"}, "password": {"tr0ub4dor-guard-42"}})
 	usersExpect(t, "create invalid", code, h, "/users", "error=identity")
 }
 
@@ -355,4 +359,28 @@ func TestUsersRevokeAll(t *testing.T) {
 	usersExpect(t, "sessions failure", code, h, "/users/boom-x", "error=internal")
 	code, _, h = p.post("/guard-admin/users/boom-x/api-keys/revoke-all", nil)
 	usersExpect(t, "keys failure", code, h, "/users/boom-x", "error=internal")
+}
+
+func TestUsersSuperAdminBadgeAndProtection(t *testing.T) {
+	p := usersPanel(t)
+	ctx := context.Background()
+	p.account("3", "second@example.com", true) // admin, not super admin
+	usersLogin(p, "admin@example.com")
+	if code, body := p.get("/guard-admin/users/1"); code != 200 || !strings.Contains(body, `data-badge="super-admin"`) {
+		t.Fatalf("super admin badge missing: %d", code)
+	}
+	if _, body := p.get("/guard-admin/users/3"); strings.Contains(body, `data-badge="super-admin"`) {
+		t.Fatal("badge on plain admin")
+	}
+
+	usersLogin(p, "second@example.com")
+	code, _, h := p.post("/guard-admin/users/2/roles", url.Values{"role": {"admin"}})
+	usersExpect(t, "admin grants admin", code, h, "/users/2", "error=access")
+	code, _, h = p.post("/guard-admin/users/1/roles/super_admin/remove", nil)
+	usersExpect(t, "admin revokes super admin", code, h, "/users/1", "error=access")
+	if ok, _ := p.g.IsSuperAdmin(ctx, "1"); !ok {
+		t.Fatal("super admin revoked by admin")
+	}
+	code, _, h = p.post("/guard-admin/users/2/roles", url.Values{"role": {"user"}})
+	usersExpect(t, "admin grants user", code, h, "/users/2", "flash=")
 }

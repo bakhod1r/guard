@@ -60,7 +60,7 @@ func (a *app) dashboard(c *gin.Context) {
 	d.Stats = append(d.Stats, statOf("apikeys", "My API keys", "/security", keys, err))
 	for _, s := range d.Stats {
 		if s.Err != "" {
-			_ = c.Error(fmt.Errorf("adminui: dashboard stat %s failed", s.Key))
+			a.logError(c, fmt.Errorf("adminui: dashboard stat %s failed", s.Key))
 		}
 	}
 	a.render(c, http.StatusOK, "dashboard", "Dashboard", "dashboard", d)
@@ -106,7 +106,7 @@ func (a *app) auditPage(c *gin.Context) {
 	if d.Configured {
 		events, err := a.g.Audit.List(c.Request.Context(), d.ActorID, d.Limit)
 		if err != nil {
-			_ = c.Error(err)
+			a.logError(c, err)
 			d.Err = "could not load audit events"
 		}
 		for _, e := range events {

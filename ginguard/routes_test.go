@@ -71,12 +71,12 @@ func setup(t *testing.T) (client, *guard.Guard) {
 
 func login(t *testing.T, c client, email string) (token, id string) {
 	t.Helper()
-	code, body := c.do("POST", "/api/auth/register", "", map[string]any{"email": email, "password": "password123"})
+	code, body := c.do("POST", "/api/auth/register", "", map[string]any{"email": email, "password": "tr0ub4dor-guard-42"})
 	if code != http.StatusCreated {
 		t.Fatalf("register %s: %d %v", email, code, body)
 	}
 	id = body["id"].(string)
-	code, body = c.do("POST", "/api/auth/login", "", map[string]any{"email": email, "password": "password123"})
+	code, body = c.do("POST", "/api/auth/login", "", map[string]any{"email": email, "password": "tr0ub4dor-guard-42"})
 	if code != http.StatusOK {
 		t.Fatalf("login %s: %d %v", email, code, body)
 	}
@@ -94,7 +94,7 @@ func TestAuthFlow(t *testing.T) {
 	if code != http.StatusOK || me["user"].(map[string]any)["id"] != id {
 		t.Fatalf("me: %d %v", code, me)
 	}
-	if code, body := c.do("POST", "/api/auth/register", "", map[string]any{"email": "ALI@example.com", "password": "password123"}); code != http.StatusConflict {
+	if code, body := c.do("POST", "/api/auth/register", "", map[string]any{"email": "ALI@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusConflict {
 		t.Fatalf("duplicate register: %d %v", code, body)
 	}
 	if code, body := c.do("POST", "/api/auth/login", "", map[string]any{"email": "ali@example.com", "password": "nope-nope"}); code != http.StatusUnauthorized {
@@ -114,13 +114,13 @@ func TestAuthFlow(t *testing.T) {
 	}
 
 	// Sessions + password change keeps current, drops others.
-	_, body := c.do("POST", "/api/auth/login", "", map[string]any{"email": "ali@example.com", "password": "password123"})
+	_, body := c.do("POST", "/api/auth/login", "", map[string]any{"email": "ali@example.com", "password": "tr0ub4dor-guard-42"})
 	tok2 := body["token"].(string)
 	_, list := c.do("GET", "/api/auth/sessions", tok, nil)
 	if n := len(list["sessions"].([]any)); n != 2 {
 		t.Fatalf("want 2 sessions, got %d", n)
 	}
-	if code, _ := c.do("PUT", "/api/auth/password", tok, map[string]any{"old_password": "password123", "new_password": "newpassword1"}); code != http.StatusNoContent {
+	if code, _ := c.do("PUT", "/api/auth/password", tok, map[string]any{"old_password": "tr0ub4dor-guard-42", "new_password": "tr0ub4dor-guard-44"}); code != http.StatusNoContent {
 		t.Fatalf("change password: %d", code)
 	}
 	if code, _ := c.do("GET", "/api/auth/me", tok2, nil); code != http.StatusUnauthorized {
@@ -207,7 +207,7 @@ func TestAdminRBACAndABAC(t *testing.T) {
 	if code, _ := c.do("GET", "/api/invoices/1", userTok, nil); code != http.StatusUnauthorized {
 		t.Fatalf("banned session still valid: %d", code)
 	}
-	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "user@example.com", "password": "password123"}); code != http.StatusForbidden {
+	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "user@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusForbidden {
 		t.Fatalf("banned login: %d", code)
 	}
 
@@ -222,7 +222,7 @@ func TestLockout(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		c.do("POST", "/api/auth/login", "", map[string]any{"email": "x@example.com", "password": "wrong-pass"})
 	}
-	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "x@example.com", "password": "password123"}); code != http.StatusTooManyRequests {
+	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "x@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusTooManyRequests {
 		t.Fatalf("lockout not enforced: %d", code)
 	}
 }
@@ -324,7 +324,7 @@ func TestHostUserAccounts(t *testing.T) {
 	ginguard.Mount(r, g, ginguard.Options{AuthRateLimit: ratelimit.Rule{Limit: -1}}) // no CreateUser
 	c := client{t: t, router: r}
 
-	if code, _ := c.do("POST", "/auth/register", "", map[string]any{"email": "a@example.com", "password": "password123"}); code != http.StatusNotFound {
+	if code, _ := c.do("POST", "/auth/register", "", map[string]any{"email": "a@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusNotFound {
 		t.Fatalf("register must not be mounted without CreateUser: %d", code)
 	}
 	if _, err := g.EnsureAdmin(context.Background(), "1", "admin@example.com", "admin-password"); err != nil {
@@ -333,14 +333,14 @@ func TestHostUserAccounts(t *testing.T) {
 	_, body := c.do("POST", "/auth/login", "", map[string]any{"email": "admin@example.com", "password": "admin-password"})
 	admin := body["token"].(string)
 
-	code, acc := c.do("POST", "/guard/users/555/account", admin, map[string]any{"email": "host@example.com", "password": "password123"})
+	code, acc := c.do("POST", "/guard/users/555/account", admin, map[string]any{"email": "host@example.com", "password": "tr0ub4dor-guard-42"})
 	if code != http.StatusCreated || acc["id"] != "555" {
 		t.Fatalf("link account: %d %v", code, acc)
 	}
-	if code, _ := c.do("POST", "/guard/users/555/account", admin, map[string]any{"email": "x@example.com", "password": "password123"}); code != http.StatusConflict {
+	if code, _ := c.do("POST", "/guard/users/555/account", admin, map[string]any{"email": "x@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusConflict {
 		t.Fatalf("second account: %d", code)
 	}
-	_, body = c.do("POST", "/auth/login", "", map[string]any{"email": "host@example.com", "password": "password123"})
+	_, body = c.do("POST", "/auth/login", "", map[string]any{"email": "host@example.com", "password": "tr0ub4dor-guard-42"})
 	userTok := body["token"].(string)
 	if code, _ := c.do("PUT", "/guard/users/555/password", userTok, map[string]any{"password": "hacked-password"}); code != http.StatusForbidden {
 		t.Fatalf("user reset own password via admin route: %d", code)

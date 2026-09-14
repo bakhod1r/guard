@@ -22,7 +22,7 @@ func TestArgon2VerifyRejectsMalformedHash(t *testing.T) {
 		"bad base64 key":  "$argon2id$v=19$m=1024,t=1,p=1$c2FsdA$!!!",
 	}
 	for name, enc := range cases {
-		if ok, err := h.Verify("password1", enc); ok || !errors.Is(err, errBadHash) {
+		if ok, err := h.Verify("correct-horse-1", enc); ok || !errors.Is(err, errBadHash) {
 			t.Errorf("%s: ok=%v err=%v", name, ok, err)
 		}
 	}

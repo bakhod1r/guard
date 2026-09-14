@@ -180,7 +180,7 @@ func TestPostgresRolesAndPermissions(t *testing.T) {
 	for _, x := range roles {
 		names = append(names, x.Name)
 	}
-	if strings.Join(names, ",") != "admin,editor,user" {
+	if strings.Join(names, ",") != "admin,editor,super_admin,user" {
 		t.Fatalf("got %v", names)
 	}
 
@@ -373,7 +373,7 @@ func TestPostgresSavePolicyStorageErrors(t *testing.T) {
 func TestPostgresLoadPoliciesStorageErrors(t *testing.T) {
 	e := newPG(t)
 	r, ctx := e.repo, context.Background()
-	for _, marker := range []string{"FROM guard_policy ", "FROM guard_policy_condition_group WHERE", "FROM guard_policy_condition c"} {
+	for _, marker := range []string{"WITH p AS (SELECT"} {
 		t.Run(marker, func(t *testing.T) {
 			e.tracer.failOn(marker)
 			_, err := r.ListPolicies(ctx)

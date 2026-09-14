@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
 <title>{{.Title}} · Guard</title>
-<style>
+<style nonce="{{.Nonce}}">
 :root{--bg:#f6f7f9;--card:#fff;--ink:#16181d;--mute:#667085;--line:#e4e7ec;--acc:#4f46e5;--acc-ink:#fff;--bad:#d92d20;--bad-bg:#fef3f2;--ok:#067647;--ok-bg:#ecfdf3}
 @media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a21;--ink:#e6e8ec;--mute:#98a2b3;--line:#2a2f3a;--acc:#818cf8;--acc-ink:#0f1115;--bad:#f97066;--bad-bg:#2a1414;--ok:#47cd89;--ok-bg:#0f2a1c}}
 *{box-sizing:border-box}
@@ -47,6 +48,7 @@ textarea{font-family:ui-monospace,Menlo,monospace;font-size:13px;min-height:160p
 .empty{color:var(--mute);padding:28px;text-align:center}
 .mono{font-family:ui-monospace,Menlo,monospace;font-size:13px;word-break:break-all}
 .stat b{display:block;font-size:24px}
+.mt0{margin-top:0}.m0{margin:0}.mt8{margin-top:8px}.bare{border:0;padding:0;margin:0}.check{display:flex;gap:8px;align-items:center;margin-top:24px}input.auto{width:auto}.left{text-align:left;padding-bottom:8px}.nowrap{white-space:nowrap}textarea.short{min-height:80px}.row.between{justify-content:space-between}a.plain{text-decoration:none;color:inherit}.auth{margin:10vh auto;max-width:380px}
 @media (max-width:720px){.shell{grid-template-columns:1fr}.side{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line)}.brand{width:100%;padding-bottom:6px}.who{width:100%;margin-top:8px}}
 </style>
 </head>
@@ -57,7 +59,7 @@ textarea{font-family:ui-monospace,Menlo,monospace;font-size:13px;min-height:160p
     <div class="brand">Guard admin</div>
     {{range .Nav}}<a href="{{.Href}}" class="{{if eq .Key $.Active}}on{{end}}">{{.Label}}</a>{{end}}
     <div class="who">{{.User.Email}}
-      <form method="post" action="{{.Base}}/logout" style="margin-top:8px"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="btn sm">Sign out</button></form>
+      <form method="post" action="{{.Base}}/logout" class="mt8"><input type="hidden" name="_csrf" value="{{.CSRF}}"><button class="btn sm">Sign out</button></form>
     </div>
   </nav>
   <main>
@@ -67,10 +69,16 @@ textarea{font-family:ui-monospace,Menlo,monospace;font-size:13px;min-height:160p
   </main>
 </div>
 {{else}}
-<main style="margin:10vh auto;max-width:380px">
+<main class="auth">
   {{if .Error}}<div class="flash err" role="alert">{{.Error}}</div>{{end}}
   {{template "content" .}}
 </main>
 {{end}}
+<script nonce="{{.Nonce}}">
+document.addEventListener("submit",function(e){var m=e.target.getAttribute("data-confirm");if(m&&!window.confirm(m)){e.preventDefault()}});
+document.addEventListener("focusin",function(e){if(e.target.hasAttribute("data-select")){e.target.select()}});
+document.addEventListener("click",function(e){var b=e.target.closest("[data-copy]");if(!b){return}var i=document.getElementById(b.getAttribute("data-copy"));i.select();if(navigator.clipboard){navigator.clipboard.writeText(i.value)}b.textContent="Copied"});
+(function(){var f=document.getElementById("p-fmt");if(!f){return}f.addEventListener("click",function(){var t=document.getElementById("p-root"),e=document.getElementById("p-fmt-err");if(!t.value.trim()){e.textContent="";return}try{t.value=JSON.stringify(JSON.parse(t.value),null,2);e.textContent=""}catch(x){e.textContent=x.message}})})();
+</script>
 </body>
 </html>

@@ -18,7 +18,7 @@ func newService(t *testing.T) *Service {
 
 func mustAccount(t *testing.T, s *Service, id, email string) *domain.User {
 	t.Helper()
-	u, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: id, Email: email, Password: "password1"})
+	u, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: id, Email: email, Password: "correct-horse-1"})
 	if err != nil {
 		t.Fatalf("create account %s: %v", id, err)
 	}
@@ -28,20 +28,20 @@ func mustAccount(t *testing.T, s *Service, id, email string) *domain.User {
 func TestCreateAccountAndAuthenticate(t *testing.T) {
 	ctx := context.Background()
 	s := newService(t)
-	u, err := s.CreateAccount(ctx, CreateAccountInput{UserID: " 42 ", Email: "Ali@Mail.uz", Password: "password1"})
+	u, err := s.CreateAccount(ctx, CreateAccountInput{UserID: " 42 ", Email: "Ali@Mail.uz", Password: "correct-horse-1"})
 	if err != nil || u.ID != "42" || u.Status != domain.StatusActive || u.Email != "ali@mail.uz" || u.Attributes == nil {
 		t.Fatalf("create: %+v %v", u, err)
 	}
 	if u.CreatedAt.IsZero() || u.CreatedAt.Location() != time.UTC {
 		t.Fatalf("created_at: %v", u.CreatedAt)
 	}
-	if _, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "43", Email: "ali@mail.uz", Password: "password1"}); !errors.Is(err, domain.ErrEmailTaken) {
+	if _, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "43", Email: "ali@mail.uz", Password: "correct-horse-1"}); !errors.Is(err, domain.ErrEmailTaken) {
 		t.Fatalf("duplicate email: %v", err)
 	}
-	if got, err := s.Authenticate(ctx, "ali@mail.uz", "password1"); err != nil || got.LastLoginAt == nil || got.ID != "42" {
+	if got, err := s.Authenticate(ctx, "ali@mail.uz", "correct-horse-1"); err != nil || got.LastLoginAt == nil || got.ID != "42" {
 		t.Fatalf("login: %v", err)
 	}
-	if _, err := s.Authenticate(ctx, "nobody@mail.uz", "password1"); !errors.Is(err, domain.ErrInvalidCredentials) {
+	if _, err := s.Authenticate(ctx, "nobody@mail.uz", "correct-horse-1"); !errors.Is(err, domain.ErrInvalidCredentials) {
 		t.Fatalf("unknown email: %v", err)
 	}
 }
@@ -59,7 +59,7 @@ func TestCreateAccountUUIDUserID(t *testing.T) {
 func TestCreateAccountInvalidUserID(t *testing.T) {
 	s := newService(t)
 	for _, id := range []string{"", "   "} {
-		if _, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: id, Email: "a@b.uz", Password: "password1"}); !errors.Is(err, domain.ErrInvalidUserID) {
+		if _, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: id, Email: "a@b.uz", Password: "correct-horse-1"}); !errors.Is(err, domain.ErrInvalidUserID) {
 			t.Fatalf("id %q: %v", id, err)
 		}
 	}
@@ -68,7 +68,7 @@ func TestCreateAccountInvalidUserID(t *testing.T) {
 func TestCreateAccountValidation(t *testing.T) {
 	s := newService(t)
 	ctx := context.Background()
-	if _, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "1", Email: "bad", Password: "password1"}); !errors.Is(err, domain.ErrInvalidEmail) {
+	if _, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "1", Email: "bad", Password: "correct-horse-1"}); !errors.Is(err, domain.ErrInvalidEmail) {
 		t.Fatalf("email: %v", err)
 	}
 	if _, err := s.CreateAccount(ctx, CreateAccountInput{UserID: "1", Email: "a@b.uz", Password: "short"}); !errors.Is(err, domain.ErrWeakPassword) {
@@ -79,7 +79,7 @@ func TestCreateAccountValidation(t *testing.T) {
 func TestCreateAccountExists(t *testing.T) {
 	s := newService(t)
 	mustAccount(t, s, "42", "a@b.uz")
-	if _, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: "42", Email: "other@b.uz", Password: "password1"}); !errors.Is(err, domain.ErrAccountExists) {
+	if _, err := s.CreateAccount(context.Background(), CreateAccountInput{UserID: "42", Email: "other@b.uz", Password: "correct-horse-1"}); !errors.Is(err, domain.ErrAccountExists) {
 		t.Fatalf("want ErrAccountExists, got %v", err)
 	}
 }
@@ -93,11 +93,11 @@ func TestAuthenticateLockout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.Authenticate(ctx, "a@b.uz", "password1"); !errors.Is(err, domain.ErrUserLocked) {
+	if _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); !errors.Is(err, domain.ErrUserLocked) {
 		t.Fatalf("want locked, got %v", err)
 	}
 	s.now = func() time.Time { return time.Now().Add(2 * time.Minute) }
-	if _, err := s.Authenticate(ctx, "a@b.uz", "password1"); err != nil {
+	if _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); err != nil {
 		t.Fatalf("lock not lifted: %v", err)
 	}
 }
@@ -109,7 +109,7 @@ func TestBannedUserCannotLogin(t *testing.T) {
 	if err := s.SetStatus(ctx, u.ID, domain.StatusBanned); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(ctx, "a@b.uz", "password1"); !errors.Is(err, domain.ErrUserBlocked) {
+	if _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); !errors.Is(err, domain.ErrUserBlocked) {
 		t.Fatalf("banned login: %v", err)
 	}
 }
@@ -118,13 +118,13 @@ func TestChangePassword(t *testing.T) {
 	ctx := context.Background()
 	s := newService(t)
 	u := mustAccount(t, s, "1", "a@b.uz")
-	if err := s.ChangePassword(ctx, u.ID, "bad", "password2"); !errors.Is(err, domain.ErrInvalidCredentials) {
+	if err := s.ChangePassword(ctx, u.ID, "bad", "battery-staple-2"); !errors.Is(err, domain.ErrInvalidCredentials) {
 		t.Fatal(err)
 	}
-	if err := s.ChangePassword(ctx, u.ID, "password1", "password2"); err != nil {
+	if err := s.ChangePassword(ctx, u.ID, "correct-horse-1", "battery-staple-2"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(ctx, "a@b.uz", "password2"); err != nil {
+	if _, err := s.Authenticate(ctx, "a@b.uz", "battery-staple-2"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -136,7 +136,7 @@ func TestSetPasswordResetsLockout(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		_, _ = s.Authenticate(ctx, "a@b.uz", "wrong-pass")
 	}
-	if _, err := s.Authenticate(ctx, "a@b.uz", "password1"); !errors.Is(err, domain.ErrUserLocked) {
+	if _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); !errors.Is(err, domain.ErrUserLocked) {
 		t.Fatalf("want locked, got %v", err)
 	}
 	if err := s.SetPassword(ctx, u.ID, "short"); !errors.Is(err, domain.ErrWeakPassword) {
@@ -149,7 +149,7 @@ func TestSetPasswordResetsLockout(t *testing.T) {
 	if got.FailedAttempts != 0 || got.LastFailedAt != nil {
 		t.Fatalf("lockout not reset: %+v", got)
 	}
-	if _, err := s.Authenticate(ctx, "a@b.uz", "password1"); !errors.Is(err, domain.ErrInvalidCredentials) {
+	if _, err := s.Authenticate(ctx, "a@b.uz", "correct-horse-1"); !errors.Is(err, domain.ErrInvalidCredentials) {
 		t.Fatalf("old password: %v", err)
 	}
 	if _, err := s.Authenticate(ctx, "a@b.uz", "new-password"); err != nil {

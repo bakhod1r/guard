@@ -25,6 +25,18 @@ func NewArgon2Hasher() *Argon2Hasher {
 	return &Argon2Hasher{Memory: 64 * 1024, Time: 3, Threads: 2, KeyLen: 32, SaltLen: 16}
 }
 
+// ErrWeakHashParams rejects argon2id parameters below the OWASP floor.
+var ErrWeakHashParams = errors.New("identity: argon2id parameters below minimum (memory >= 19456 KiB, time >= 2, threads >= 1, salt/key >= 16 bytes)")
+
+// NewArgon2HasherWithParams returns a hasher with custom parameters, refusing
+// values below the OWASP argon2id minimum (m=19456 KiB, t=2, p=1).
+func NewArgon2HasherWithParams(memory, time uint32, threads uint8, keyLen, saltLen uint32) (*Argon2Hasher, error) {
+	if memory < 19456 || time < 2 || threads < 1 || keyLen < 16 || saltLen < 16 {
+		return nil, ErrWeakHashParams
+	}
+	return &Argon2Hasher{Memory: memory, Time: time, Threads: threads, KeyLen: keyLen, SaltLen: saltLen}, nil
+}
+
 var errBadHash = errors.New("identity: malformed password hash")
 
 func (h *Argon2Hasher) Hash(plain string) (string, error) {
@@ -37,25 +49,50 @@ func (h *Argon2Hasher) Hash(plain string) (string, error) {
 		argon2.Version, h.Memory, h.Time, h.Threads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
 }
 
-func (h *Argon2Hasher) Verify(plain, encoded string) (bool, error) {
+// argon2Params are the parameters decoded from a PHC-format argon2id hash.
+type argon2Params struct {
+	memory, time uint32
+	threads      uint8
+	salt, key    []byte
+}
+
+func decodeArgon2(encoded string) (*argon2Params, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
-		return false, errBadHash
+		return nil, errBadHash
 	}
-	var memory, iterations uint32
-	var threads uint8
-	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &memory, &iterations, &threads); err != nil {
-		return false, errBadHash
+	var version int
+	if _, err := fmt.Sscanf(parts[2], "v=%d", &version); err != nil || version != argon2.Version {
+		return nil, errBadHash
+	}
+	var p argon2Params
+	if _, err := fmt.Sscanf(parts[3], "m=%d,t=%d,p=%d", &p.memory, &p.time, &p.threads); err != nil || p.time < 1 || p.threads < 1 {
+		return nil, errBadHash
 	}
 	b64 := base64.RawStdEncoding
-	salt, err := b64.DecodeString(parts[4])
-	if err != nil {
-		return false, errBadHash
+	var err error
+	if p.salt, err = b64.DecodeString(parts[4]); err != nil {
+		return nil, errBadHash
 	}
-	want, err := b64.DecodeString(parts[5])
-	if err != nil {
-		return false, errBadHash
+	if p.key, err = b64.DecodeString(parts[5]); err != nil {
+		return nil, errBadHash
 	}
-	got := argon2.IDKey([]byte(plain), salt, iterations, memory, threads, uint32(len(want)))
-	return subtle.ConstantTimeCompare(got, want) == 1, nil
+	return &p, nil
+}
+
+func (h *Argon2Hasher) Verify(plain, encoded string) (bool, error) {
+	p, err := decodeArgon2(encoded)
+	if err != nil {
+		return false, err
+	}
+	got := argon2.IDKey([]byte(plain), p.salt, p.time, p.memory, p.threads, uint32(len(p.key))) //nolint:gosec // key length bounded by decodeArgon2
+	return subtle.ConstantTimeCompare(got, p.key) == 1, nil
+}
+
+// NeedsRehash reports whether encoded is not an argon2id hash produced with
+// exactly this hasher's parameters.
+func (h *Argon2Hasher) NeedsRehash(encoded string) bool {
+	p, err := decodeArgon2(encoded)
+	return err != nil || p.memory != h.Memory || p.time != h.Time || p.threads != h.Threads ||
+		uint32(len(p.salt)) != h.SaltLen || uint32(len(p.key)) != h.KeyLen //nolint:gosec // lengths bounded by decodeArgon2
 }

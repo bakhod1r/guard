@@ -1,10 +1,51 @@
+# Local stack: app + PostgreSQL + Redis.
+#   docker compose -f examples/gin/docker-compose.yml up --build
+# Host ports are non-default to avoid clashing with local services.
+# Credentials here are for local development only.
 services:
   postgres:
     image: postgres:17-alpine
     environment:
+      POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: guard
-    ports: ["5432:5432"]
+    ports: ["${GUARD_PG_PORT:-18432}:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d guard"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes: [pgdata:/var/lib/postgresql/data]
+
   redis:
     image: redis:7-alpine
-    ports: ["6379:6379"]
+    ports: ["${GUARD_REDIS_PORT:-18379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build:
+      context: ../..
+      dockerfile: examples/gin/Dockerfile
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/guard?sslmode=disable
+      REDIS_ADDR: redis:6379
+      ADDR: ":8080"
+      GUARD_SUPERADMIN_EMAIL: ${GUARD_SUPERADMIN_EMAIL:-}
+      GUARD_SUPERADMIN_PASSWORD: ${GUARD_SUPERADMIN_PASSWORD:-}
+      GUARD_TRUSTED_PROXIES: ${GUARD_TRUSTED_PROXIES:-}
+      GUARD_ADMIN_EMAIL: ${GUARD_ADMIN_EMAIL:-admin@example.com}
+      GUARD_ADMIN_PASSWORD: ${GUARD_ADMIN_PASSWORD:-change-me-now}
+      # Plain HTTP on localhost only. Never set in production.
+      GUARD_INSECURE_COOKIE: "1"
+    ports: ["${GUARD_APP_PORT:-18080}:8080"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    restart: on-failure
+
+volumes:
+  pgdata:

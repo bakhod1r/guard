@@ -32,11 +32,16 @@ var csrfRe = regexp.MustCompile(`name="_csrf" value="([^"]+)"`)
 
 func newPanel(t *testing.T) *panel {
 	t.Helper()
+	return newPanelWith(t, adminui.Options{InsecureCookie: true})
+}
+
+func newPanelWith(t *testing.T, opts adminui.Options) *panel {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	mr := miniredis.RunT(t)
 	g := guardtest.New(redis.NewClient(&redis.Options{Addr: mr.Addr()}), guard.Config{})
 	r := gin.New()
-	adminui.Mount(r, g, adminui.Options{InsecureCookie: true})
+	adminui.Mount(r, g, opts)
 	return &panel{t: t, g: g, r: r}
 }
 
@@ -45,12 +50,12 @@ func (p *panel) account(id, email string, admin bool) {
 	p.t.Helper()
 	ctx := context.Background()
 	if admin {
-		if _, err := p.g.EnsureAdmin(ctx, id, email, "password123"); err != nil {
+		if _, err := p.g.EnsureAdmin(ctx, id, email, "tr0ub4dor-guard-42"); err != nil {
 			p.t.Fatal(err)
 		}
 		return
 	}
-	if _, err := p.g.CreateAccount(ctx, id, email, "password123", nil, guard.RequestMeta{}); err != nil {
+	if _, err := p.g.CreateAccount(ctx, id, email, "tr0ub4dor-guard-42", nil, guard.RequestMeta{}); err != nil {
 		p.t.Fatal(err)
 	}
 }
@@ -58,7 +63,7 @@ func (p *panel) account(id, email string, admin bool) {
 func (p *panel) login(email string) {
 	p.t.Helper()
 	p.cookie = nil
-	code, _, hdr := p.post("/guard-admin/login", url.Values{"email": {email}, "password": {"password123"}})
+	code, _, hdr := p.post("/guard-admin/login", url.Values{"email": {email}, "password": {"tr0ub4dor-guard-42"}})
 	if code != http.StatusSeeOther {
 		p.t.Fatalf("login %s: %d", email, code)
 	}

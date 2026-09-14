@@ -105,7 +105,7 @@ func (failingUsers) ByEmail(context.Context, identitydomain.Email) (*identitydom
 func TestLoginErrorMessages(t *testing.T) {
 	_, g := testApp(t)
 	ctx := context.Background()
-	if _, err := g.CreateAccount(ctx, "1", "a@example.com", "password123", nil, guard.RequestMeta{}); err != nil {
+	if _, err := g.CreateAccount(ctx, "1", "a@example.com", "tr0ub4dor-guard-42", nil, guard.RequestMeta{}); err != nil {
 		t.Fatal(err)
 	}
 	r := gin.New()
@@ -122,14 +122,14 @@ func TestLoginErrorMessages(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		login(r, "wrong-password")
 	}
-	if loc := login(r, "password123"); !strings.Contains(loc, identitydomain.ErrUserLocked.Error()) {
+	if loc := login(r, "tr0ub4dor-guard-42"); !strings.Contains(loc, identitydomain.ErrUserLocked.Error()) {
 		t.Fatalf("locked message: %s", loc)
 	}
 
 	gi := guard.Build(guard.Repositories{Users: failingUsers{}, Hasher: nil}, guard.Config{})
 	r2 := gin.New()
 	Mount(r2, gi, Options{})
-	if loc := login(r2, "password123"); !strings.Contains(loc, "internal error") {
+	if loc := login(r2, "tr0ub4dor-guard-42"); !strings.Contains(loc, "internal error") {
 		t.Fatalf("internal error message: %s", loc)
 	}
 }

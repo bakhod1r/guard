@@ -46,7 +46,7 @@ func (a *app) securityPage(c *gin.Context) {
 		keys, err = a.g.APIKeys.List(ctx, string(p.User.ID))
 	}
 	if err != nil {
-		_ = c.Error(err)
+		a.logError(c, err)
 		a.render(c, http.StatusInternalServerError, "error", "Error", "security", map[string]string{"Message": "internal error"})
 		return
 	}

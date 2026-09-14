@@ -4,8 +4,8 @@
   <p><b>{{.Data.Key.Name}}</b> {{range .Data.Key.Scopes}}<span class="badge">{{.}}</span>{{end}}</p>
   <div class="flash err" role="alert">Copy this key now. It will not be shown again.</div>
   <div class="row">
-    <input id="new-key" class="mono" readonly value="{{.Data.Token}}" onfocus="this.select()">
-    <button type="button" class="btn" onclick="var i=document.getElementById('new-key');i.select();navigator.clipboard&&navigator.clipboard.writeText(i.value);this.textContent='Copied'">Copy</button>
+    <input id="new-key" class="mono" readonly value="{{.Data.Token}}" data-select>
+    <button type="button" class="btn" data-copy="new-key">Copy</button>
   </div>
   <p><a class="btn" href="{{.Base}}/security">Back to my sessions &amp; API keys</a></p>
 </div>

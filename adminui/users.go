@@ -40,7 +40,7 @@ func userPath(id string) string { return "/users/" + url.PathEscape(id) }
 // usersError renders the error page; internal causes are logged, never shown.
 func (a *app) usersError(c *gin.Context, status int, msg string, err error) {
 	if err != nil {
-		_ = c.Error(err)
+		a.logError(c, err)
 	}
 	a.render(c, status, "error", http.StatusText(status), "users", map[string]string{"Message": msg})
 }
@@ -95,6 +95,7 @@ type userDetailData struct {
 	Roles                                                 []guard.Role
 	Statuses                                              []identitydomain.Status
 	CanWrite, CanAssign, CanRevokeSessions, CanRevokeKeys bool
+	SuperAdmin                                            bool
 }
 
 func (a *app) userDetail(c *gin.Context) {
@@ -124,6 +125,10 @@ func (a *app) userDetail(c *gin.Context) {
 	if err := errors.Join(e1, e2, e3, e4); err != nil {
 		a.usersError(c, http.StatusInternalServerError, "internal error", err)
 		return
+	}
+	now := time.Now()
+	for _, gr := range d.Grants {
+		d.SuperAdmin = d.SuperAdmin || (gr.Role.Name == guard.RoleSuperAdmin && gr.Active(now))
 	}
 	for k, v := range u.Attributes {
 		d.Attributes = append(d.Attributes, userAttribute{Key: k, Value: userJSON(v, "")})
@@ -207,7 +212,7 @@ func (a *app) userAssignRole(c *gin.Context) {
 
 func (a *app) userUnassignRole(c *gin.Context) {
 	id, role := c.Param("id"), c.Param("role")
-	if err := a.g.Access.UnassignRole(c.Request.Context(), id, role); err != nil {
+	if err := a.g.Access.UnassignRoleAs(c.Request.Context(), a.actor(c), id, role); err != nil {
 		a.fail(c, userPath(id), err)
 		return
 	}

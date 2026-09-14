@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"sort"
 	"time"
 )
 
@@ -39,6 +40,9 @@ type Policy struct {
 	IdleTimeout time.Duration
 	// AbsoluteTimeout caps total session lifetime regardless of activity.
 	AbsoluteTimeout time.Duration
+	// MaxPerUser caps concurrent sessions per user; Start evicts the least
+	// recently used sessions beyond it. 0 means unlimited.
+	MaxPerUser int
 }
 
 func DefaultPolicy() Policy {
@@ -83,10 +87,57 @@ func (s *Session) TTL(now time.Time, p Policy) time.Duration {
 	return end.Sub(now)
 }
 
+// Evict returns the IDs of the least recently used sessions (by LastSeenAt,
+// ties by ID) that must go so that at most limit remain. keep is never evicted
+// but counts toward the limit. limit <= 0 means unlimited.
+func Evict(sessions []*Session, limit int, keep ID) []ID {
+	excess := len(sessions) - limit
+	if limit <= 0 || excess <= 0 {
+		return nil
+	}
+	sorted := make([]*Session, 0, len(sessions))
+	for _, s := range sessions {
+		if s.ID != keep {
+			sorted = append(sorted, s)
+		}
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		if !sorted[i].LastSeenAt.Equal(sorted[j].LastSeenAt) {
+			return sorted[i].LastSeenAt.Before(sorted[j].LastSeenAt)
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	out := make([]ID, 0, excess)
+	for _, s := range sorted[:excess] {
+		out = append(out, s.ID)
+	}
+	return out
+}
+
 type Repository interface {
 	Save(ctx context.Context, s *Session, ttl time.Duration) error
 	Get(ctx context.Context, id ID) (*Session, error)
 	Delete(ctx context.Context, id ID) error
 	ListByUser(ctx context.Context, userID string) ([]*Session, error)
 	DeleteByUser(ctx context.Context, userID string) error
+}
+
+// Toucher is an optional Repository capability: persist a slid session only
+// if it still exists, so a concurrent Revoke/RevokeAll cannot be undone by an
+// in-flight request. Returns ErrSessionNotFound when the session vanished.
+type Toucher interface {
+	Touch(ctx context.Context, s *Session, ttl time.Duration) error
+}
+
+// Taker is an optional Repository capability: atomically read and delete a
+// session so only one caller can claim it (used by Rotate). Returns
+// ErrSessionNotFound when the session is gone.
+type Taker interface {
+	Take(ctx context.Context, id ID) (*Session, error)
+}
+
+// LimitedSaver is an optional Repository capability: atomically save s and
+// evict the user's least recently used sessions so at most limit remain.
+type LimitedSaver interface {
+	SaveLimited(ctx context.Context, s *Session, ttl time.Duration, limit int) error
 }

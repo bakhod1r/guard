@@ -17,7 +17,7 @@
 <tbody>
 {{range $role.Permissions}}
 <tr><td class="mono">{{.Code}}</td><td>{{.Description}}</td>
-{{if $.Data.CanWrite}}<td><form class="inline" method="post" action="{{$.Base}}/roles/{{$role.Name}}/permissions/revoke">
+{{if $.Data.CanWrite}}<td><form class="inline" method="post" action="{{$.Base}}/roles/{{$role.Name}}/permissions/revoke" data-confirm="Revoke this permission from the role?">
 <input type="hidden" name="_csrf" value="{{$.CSRF}}"><input type="hidden" name="code" value="{{.Code}}">
 <button class="btn danger sm" type="submit" aria-label="Revoke {{.Code}}">Revoke</button></form></td>{{end}}</tr>
 {{end}}
@@ -44,7 +44,7 @@
 {{if and .Data.CanWrite (not $role.IsSystem)}}
 <div class="card">
 <h2>Danger zone</h2>
-<form method="post" action="{{.Base}}/roles/{{$role.Name}}/delete" onsubmit="return confirm('Delete this role?')">
+<form method="post" action="{{.Base}}/roles/{{$role.Name}}/delete" data-confirm="Delete this role?">
 <input type="hidden" name="_csrf" value="{{$.CSRF}}">
 <button class="btn danger" type="submit">Delete role</button>
 </form>

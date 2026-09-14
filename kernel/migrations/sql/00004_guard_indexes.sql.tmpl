@@ -1,0 +1,17 @@
+-- +goose Up
+-- =============================================================
+-- Indexes on foreign-key columns that had none. Without them, deleting a host
+-- user (ON DELETE SET NULL on granted_by) or a policy (ON DELETE CASCADE)
+-- sequentially scans the referencing table while holding row locks.
+-- Partial on granted_by: most grants are system-issued (NULL) and never looked up.
+-- =============================================================
+
+CREATE INDEX IF NOT EXISTS guard_idx_role_permission_granted_by ON guard_role_permission (granted_by) WHERE granted_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS guard_idx_user_role_granted_by ON guard_user_role (granted_by) WHERE granted_by IS NOT NULL;
+CREATE INDEX IF NOT EXISTS guard_idx_pcg_policy ON guard_policy_condition_group (policy_id);
+
+
+-- +goose Down
+DROP INDEX IF EXISTS guard_idx_pcg_policy;
+DROP INDEX IF EXISTS guard_idx_user_role_granted_by;
+DROP INDEX IF EXISTS guard_idx_role_permission_granted_by;

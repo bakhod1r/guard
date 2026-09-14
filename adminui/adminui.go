@@ -6,6 +6,12 @@
 // Pages authenticate with the Guard session cookie (API keys are refused),
 // check a permission per page and protect every POST with a CSRF token bound
 // to the session.
+//
+// Multi-instance deployments (several replicas behind a load balancer) MUST
+// set Options.CSRFSecret to the same >=32-byte secret on every instance.
+// The default secret is random per process, so a form rendered by one replica
+// is rejected (403) when submitted to another, and every restart invalidates
+// open forms.
 package adminui
 
 import (
@@ -29,6 +35,7 @@ import (
 	accessdomain "github.com/bakhod1r/guard/access/domain"
 	apikeydomain "github.com/bakhod1r/guard/apikey/domain"
 	identitydomain "github.com/bakhod1r/guard/identity/domain"
+	"github.com/bakhod1r/guard/ratelimit"
 	sessiondomain "github.com/bakhod1r/guard/session/domain"
 )
 
@@ -42,8 +49,20 @@ type Options struct {
 	CookieName string
 	// InsecureCookie drops the Secure flag (local HTTP development only).
 	InsecureCookie bool
-	// CSRFSecret signs CSRF tokens. Default: random per process (tokens reset on restart).
+	// CSRFSecret is the HMAC-SHA256 key that signs CSRF tokens. Use at least
+	// 32 random bytes and keep it secret (load it from env/secret store, never
+	// commit it). Default: random per process, so tokens reset on restart.
+	// REQUIRED for multi-instance deployments: every replica must share the
+	// same value, otherwise POSTs routed to a different instance fail with 403.
 	CSRFSecret []byte
+	// MaxBodyBytes caps form bodies (413). Zero value: 1 MiB.
+	MaxBodyBytes int64
+	// LoginRateLimit throttles POST /login per client IP (bucket "adminui-login").
+	// Zero value: 10 requests per minute. Limit < 0 disables. Needs Guard.Limiter.
+	LoginRateLimit ratelimit.Rule
+	// ErrorLogger receives internal errors and rate-limiter failures; pages only
+	// ever show "internal error". Default: DefaultErrorLogger (slog).
+	ErrorLogger func(c *gin.Context, err error)
 }
 
 type app struct {
@@ -62,6 +81,20 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	if opts.CookieName == "" {
 		opts.CookieName = "guard_session"
 	}
+	if opts.MaxBodyBytes <= 0 {
+		opts.MaxBodyBytes = DefaultMaxBodyBytes
+	}
+	if opts.LoginRateLimit == (ratelimit.Rule{}) {
+		opts.LoginRateLimit = ratelimit.Rule{Limit: 10, Window: time.Minute}
+	}
+	if opts.LoginRateLimit.Limit > 0 {
+		if err := opts.LoginRateLimit.Valid(); err != nil {
+			panic("adminui: LoginRateLimit: " + err.Error())
+		}
+	}
+	if opts.ErrorLogger == nil {
+		opts.ErrorLogger = DefaultErrorLogger
+	}
 	a := &app{g: g, o: opts, secret: opts.CSRFSecret}
 	if len(a.secret) == 0 {
 		a.secret = make([]byte, 32)
@@ -69,15 +102,16 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	}
 	a.pages = mustParse()
 
-	root := r.Group(opts.Path, a.noStore)
+	root := r.Group(opts.Path, a.noStore, a.limitBody)
 	root.GET("/login", a.loginPage)
-	root.POST("/login", a.login)
+	root.POST("/login", a.limitLogin, a.login)
 
 	authed := root.Group("", a.requireSession, a.verifyCSRF)
 	authed.POST("/logout", a.logout)
 	a.registerDashboard(authed)
 	a.registerUsers(authed)
 	a.registerRBAC(authed)
+	a.registerRoutes(authed)
 	a.registerPolicies(authed)
 	a.registerSecurity(authed)
 	a.registerAudit(authed)
@@ -124,13 +158,14 @@ func mustParse() map[string]*template.Template {
 // View is passed to every template.
 type View struct {
 	Title  string
-	Active string // nav key: dashboard, users, roles, permissions, policies, security, audit
+	Active string // nav key: dashboard, users, roles, permissions, routes, policies, security, audit
 	Base   string
 	User   *guard.User
 	CSRF   string
 	Flash  string
 	Error  string
 	Nav    []NavItem
+	Nonce  string // CSP nonce for the page's <style> and <script> elements
 	Data   any
 }
 
@@ -145,6 +180,7 @@ var navItems = []struct {
 	{"users", "Users", "/users", "user.read"},
 	{"roles", "Roles", "/roles", "role.read"},
 	{"permissions", "Permissions", "/permissions", "permission.read"},
+	{"routes", "Routes", "/routes", "permission.read"},
 	{"policies", "Policies", "/policies", "policy.read"},
 	{"security", "My sessions & API keys", "/security", ""},
 	{"audit", "Audit log", "/audit", "audit.read"},
@@ -157,7 +193,7 @@ func (a *app) render(c *gin.Context, status int, page, title, active string, dat
 		return
 	}
 	v := View{Title: title, Active: active, Base: a.o.Path, Data: data,
-		Flash: c.Query("flash"), Error: c.Query("error")}
+		Flash: c.Query("flash"), Error: c.Query("error"), Nonce: c.GetString(nonceKey)}
 	if p := ginPrincipal(c); p != nil {
 		v.User = p.User
 		v.CSRF = a.csrfToken(p.Session.ID)
@@ -170,7 +206,7 @@ func (a *app) render(c *gin.Context, status int, page, title, active string, dat
 	c.Status(status)
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	if err := t.ExecuteTemplate(c.Writer, "layout.html", v); err != nil {
-		_ = c.Error(err)
+		a.logError(c, err)
 	}
 }
 
@@ -187,7 +223,7 @@ func (a *app) redirect(c *gin.Context, p, flash string) {
 func (a *app) fail(c *gin.Context, p string, err error) {
 	msg := err.Error()
 	if !isDomainError(err) {
-		_ = c.Error(err)
+		a.logError(c, err)
 		msg = "internal error"
 	}
 	c.Redirect(http.StatusSeeOther, withQuery(a.o.Path+p, "error", msg))
@@ -209,7 +245,7 @@ var domainErrors = []error{
 	accessdomain.ErrRoleNotFound, accessdomain.ErrRoleExists, accessdomain.ErrSystemRole,
 	accessdomain.ErrPermissionNotFound, accessdomain.ErrPolicyNotFound, accessdomain.ErrPolicyNameTaken,
 	accessdomain.ErrSubjectNotFound, accessdomain.ErrInvalidName, accessdomain.ErrInvalidPermission,
-	accessdomain.ErrInvalidPolicy,
+	accessdomain.ErrInvalidPolicy, accessdomain.ErrForbidden, accessdomain.ErrLastSuperAdmin, accessdomain.ErrSuperAdminExpiry,
 	apikeydomain.ErrKeyNotFound, apikeydomain.ErrOwnerNotFound, apikeydomain.ErrInvalidName,
 	apikeydomain.ErrInvalidScope, apikeydomain.ErrNoScopes, apikeydomain.ErrBadExpiry,
 	sessiondomain.ErrSessionNotFound, guard.ErrSessionRequired, errForbidden, errBadInput,
@@ -238,14 +274,6 @@ func ginPrincipal(c *gin.Context) *guard.Principal {
 		return v.(*guard.Principal)
 	}
 	return nil
-}
-
-func (a *app) noStore(c *gin.Context) {
-	c.Header("Cache-Control", "no-store")
-	c.Header("X-Frame-Options", "DENY")
-	c.Header("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'none'")
-	c.Header("Referrer-Policy", "same-origin")
-	c.Next()
 }
 
 func (a *app) requireSession(c *gin.Context) {
@@ -336,12 +364,13 @@ func (a *app) login(c *gin.Context) {
 		if errors.Is(err, identitydomain.ErrUserLocked) || errors.Is(err, identitydomain.ErrUserBlocked) {
 			msg = err.Error()
 		} else if !isDomainError(err) {
-			_ = c.Error(err)
+			a.logError(c, err)
 			msg = "internal error"
 		}
 		c.Redirect(http.StatusSeeOther, withQuery(withQuery(a.o.Path+"/login", "error", msg), "next", next))
 		return
 	}
+	a.revokeCookieSession(c)
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(a.o.CookieName, string(res.Token), int(time.Until(res.Session.ExpiresAt).Seconds()), "/", "", !a.o.InsecureCookie, true)
 	c.Redirect(http.StatusSeeOther, next)

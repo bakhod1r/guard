@@ -1,12 +1,18 @@
 package guard
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -660,7 +666,8 @@ func TestNewWithPostgresAndRedisIntegration(t *testing.T) {
 		t.Fatalf("ref = %+v, err = %v", ref, err)
 	}
 	dir := filepath.Join(t.TempDir(), "guard")
-	if files, err := g.WriteMigrations(ctx, dir); err != nil || len(files) != 3 {
+	// Exactly the embedded set (core 00001-00004 plus 00005/00006 once added).
+	if files, err := g.WriteMigrations(ctx, dir); err != nil || len(files) != embeddedMigrationCount(t, ref) {
 		t.Fatalf("files = %v, err = %v", files, err)
 	}
 	if err := g.Migrate(ctx, ""); err != nil {
@@ -689,4 +696,372 @@ func TestNewWithPostgresAndRedisIntegration(t *testing.T) {
 	if err := bad.Migrate(ctx, ""); err == nil {
 		t.Fatal("Migrate on missing table: want error")
 	}
+}
+
+type failingAudit struct{ audit.Memory }
+
+func (*failingAudit) Record(context.Context, audit.Event) error { return errBoom }
+
+type logBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func testLogger() (*slog.Logger, *logBuffer) {
+	buf := &logBuffer{}
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug})), buf
+}
+
+func TestLoggerDefaultsToSlogDefault(t *testing.T) {
+	if g := Build(Repositories{}, Config{}); g.logger != slog.Default() {
+		t.Fatal("nil Config.Logger must use slog.Default()")
+	}
+}
+
+func TestAuditWriteFailureIsLoggedAtWarn(t *testing.T) {
+	logger, buf := testLogger()
+	f := newFixture(t, Config{Logger: logger})
+	f.g.Audit = &failingAudit{}
+	f.account(t, "1")
+	if s := buf.String(); !strings.Contains(s, "level=WARN") || !strings.Contains(s, "account.create") || !strings.Contains(s, errBoom.Error()) {
+		t.Fatalf("log = %q", s)
+	}
+}
+
+func TestLoginFailureLogsHashedEmailOnly(t *testing.T) {
+	logger, buf := testLogger()
+	f := newFixture(t, Config{Logger: logger})
+	f.account(t, "1")
+	const secret = "tr0ub4dor-guard-42-wrong"
+	if _, err := f.g.Login(context.Background(), " 1@Example.com", secret, RequestMeta{IP: "9.9.9.9"}); err == nil {
+		t.Fatal("want error")
+	}
+	sum := sha256.Sum256([]byte("1@example.com"))
+	s := buf.String()
+	if !strings.Contains(s, "level=INFO") || !strings.Contains(s, "email_sha256="+hex.EncodeToString(sum[:])[:16]) || !strings.Contains(s, "ip=9.9.9.9") {
+		t.Fatalf("log = %q", s)
+	}
+	if strings.Contains(strings.ToLower(s), "example.com") || strings.Contains(s, secret) {
+		t.Fatalf("log leaks email or password: %q", s)
+	}
+}
+
+func TestAsyncAuditFlushesOnClose(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, Config{AsyncAudit: 8})
+	if _, ok := f.g.Audit.(*audit.Async); !ok {
+		t.Fatalf("Audit = %T, want *audit.Async", f.g.Audit)
+	}
+	f.account(t, "1")
+	if err := f.g.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.audit.Events) != 1 || f.audit.Events[0].Action != "account.create" {
+		t.Fatalf("events = %+v", f.audit.Events)
+	}
+	if sf := newFixture(t, Config{}); sf.g.Close(ctx) != nil || sf.g.Audit != audit.Log(sf.audit) {
+		t.Fatal("AsyncAudit 0 must stay synchronous and Close must be a no-op")
+	}
+	if g := Build(Repositories{}, Config{AsyncAudit: 4}); g.Audit != nil {
+		t.Fatal("no audit log: nothing to wrap")
+	}
+}
+
+func TestHealth(t *testing.T) {
+	ctx := context.Background()
+	if err := Build(Repositories{}, Config{}).Health(ctx); err == nil {
+		t.Fatal("Health without backends: want error")
+	}
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	g := Build(Repositories{}, Config{})
+	g.redis = rdb
+	if err := g.Health(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mr.Close()
+	if err := g.Health(ctx); err == nil || !strings.Contains(err.Error(), "redis") {
+		t.Fatalf("Health = %v, want redis error", err)
+	}
+}
+
+func TestHealthAndCloseIntegration(t *testing.T) {
+	pool, rdb, prefix := freshDatabase(t)
+	ctx := context.Background()
+	g, err := New(Config{DB: pool, Redis: rdb, RedisPrefix: prefix, AsyncAudit: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Migrate(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Health(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := pool.QueryRow(ctx, `INSERT INTO users DEFAULT VALUES RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.CreateAccount(ctx, id, "ops@example.com", "tr0ub4dor-guard-42", nil, RequestMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM guard_audit_event WHERE action = 'account.create'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("flushed audit rows = %d, err = %v", n, err)
+	}
+	// Close must not close the caller's pool or client.
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("pool closed by Guard: %v", err)
+	}
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		t.Fatalf("redis closed by Guard: %v", err)
+	}
+	pool.Close()
+	if err := g.Health(ctx); err == nil || !strings.Contains(err.Error(), "postgres") {
+		t.Fatalf("Health = %v, want postgres error", err)
+	}
+}
+
+func TestAuditBufferEnabledWrapsPostgresAndDisablesAsync(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	pool, err := pgxpool.New(ctx, "postgres://u:p@127.0.0.1:1/none?sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	g, err := New(Config{DB: pool, Redis: rdb, AsyncAudit: 8,
+		AuditBuffer: AuditBuffer{Enabled: true, BatchSize: 10, Interval: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.asyncAudit != nil || g.auditBuffer == nil {
+		t.Fatalf("asyncAudit = %v, auditBuffer = %v; want buffer only", g.asyncAudit, g.auditBuffer)
+	}
+	if _, ok := g.Audit.(*audit.RedisBuffer); !ok {
+		t.Fatalf("Audit = %T, want *audit.RedisBuffer", g.Audit)
+	}
+	if err := g.Close(ctx); err != nil {
+		t.Fatalf("Close with empty queue = %v", err)
+	}
+	if err := g.Close(ctx); err != nil {
+		t.Fatalf("second Close = %v", err)
+	}
+}
+
+func TestAuditBufferFlushesOnCloseIntegration(t *testing.T) {
+	pool, rdb, prefix := freshDatabase(t)
+	ctx := context.Background()
+	g, err := New(Config{DB: pool, Redis: rdb, RedisPrefix: prefix,
+		AuditBuffer: AuditBuffer{Enabled: true, Interval: time.Hour}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Migrate(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := pool.QueryRow(ctx, `INSERT INTO users DEFAULT VALUES RETURNING id::text`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.CreateAccount(ctx, id, "buf@example.com", pw, nil, RequestMeta{}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := rdb.LLen(ctx, prefix+"{audit}:queue").Result(); err != nil || n != 1 {
+		t.Fatalf("queued = %d, err = %v; want 1 before Close", n, err)
+	}
+	if err := g.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM guard_audit_event WHERE action = 'account.create'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("flushed audit rows = %d, err = %v", n, err)
+	}
+}
+
+func TestSessionPolicyFillsEachZeroField(t *testing.T) {
+	def := sessiondomain.DefaultPolicy()
+	got := sessionPolicy(SessionPolicy{MaxPerUser: 3})
+	if got.IdleTimeout != def.IdleTimeout || got.AbsoluteTimeout != def.AbsoluteTimeout || got.MaxPerUser != 3 {
+		t.Fatalf("MaxPerUser only: %+v", got)
+	}
+	got = sessionPolicy(SessionPolicy{IdleTimeout: time.Minute})
+	if got.IdleTimeout != time.Minute || got.AbsoluteTimeout != def.AbsoluteTimeout {
+		t.Fatalf("idle only: %+v", got)
+	}
+	got = sessionPolicy(SessionPolicy{AbsoluteTimeout: time.Hour})
+	if got.IdleTimeout != def.IdleTimeout || got.AbsoluteTimeout != time.Hour {
+		t.Fatalf("absolute only: %+v", got)
+	}
+	if got := lockoutPolicy(Lockout{MaxAttempts: 9}); got.MaxAttempts != 9 || got.Duration != identitydomain.DefaultLockout().Duration {
+		t.Fatalf("lockout attempts only: %+v", got)
+	}
+	if got := lockoutPolicy(Lockout{Duration: time.Second}); got.Duration != time.Second || got.MaxAttempts != identitydomain.DefaultLockout().MaxAttempts {
+		t.Fatalf("lockout duration only: %+v", got)
+	}
+}
+
+func TestSessionWithOnlyMaxPerUserDoesNotExpireImmediately(t *testing.T) {
+	f := newFixture(t, Config{Session: SessionPolicy{MaxPerUser: 2}})
+	f.account(t, "1")
+	r := f.login(t, "1")
+	if _, err := f.g.Authenticate(context.Background(), string(r.Token)); err != nil {
+		t.Fatalf("fresh session rejected: %v", err)
+	}
+}
+
+func TestRotateSession(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, Config{})
+	f.account(t, "1")
+	r := f.login(t, "1")
+	s, tok, err := f.g.RotateSession(ctx, r.Token)
+	if err != nil || tok == "" || tok == r.Token || s.UserID != "1" {
+		t.Fatalf("rotate: %+v %q %v", s, tok, err)
+	}
+	if _, err := f.g.Authenticate(ctx, string(r.Token)); err == nil {
+		t.Fatal("old token still valid")
+	}
+	if _, err := f.g.Authenticate(ctx, string(tok)); err != nil {
+		t.Fatalf("new token: %v", err)
+	}
+	if last := f.audit.Events[len(f.audit.Events)-1]; last.Action != "session.rotate" || last.ActorID != "1" {
+		t.Fatalf("audit: %+v", last)
+	}
+	if _, _, err := f.g.RotateSession(ctx, r.Token); !errors.Is(err, sessiondomain.ErrSessionNotFound) {
+		t.Fatalf("rotate old: %v", err)
+	}
+}
+
+func TestPasswordHasher(t *testing.T) {
+	h, err := passwordHasher(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Legacy bcrypt hashes must verify (MultiHasher).
+	legacy := "$2a$04$" + "invalid"
+	if _, err := h.Verify("x", legacy); err == nil {
+		t.Fatal("want bcrypt path error for malformed bcrypt hash")
+	}
+	if !h.NeedsRehash(legacy) {
+		t.Fatal("bcrypt must need rehash")
+	}
+	if _, err := passwordHasher(&PasswordHashParams{Memory: 1, Time: 1, Threads: 1, KeyLen: 32, SaltLen: 16}); !errors.Is(err, identityinfra.ErrWeakHashParams) {
+		t.Fatalf("weak params: %v", err)
+	}
+	h, err = passwordHasher(&PasswordHashParams{Memory: 19456, Time: 2, Threads: 1, KeyLen: 32, SaltLen: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, _ := h.Hash("s3cret-value")
+	if ok, err := h.Verify("s3cret-value", enc); !ok || err != nil {
+		t.Fatalf("verify: %v %v", ok, err)
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: "localhost:1"})
+	defer rdb.Close()
+	if _, err := New(Config{DB: &pgxpool.Pool{}, Redis: rdb, PasswordHashParams: &PasswordHashParams{Memory: 1}}); !errors.Is(err, identityinfra.ErrWeakHashParams) {
+		t.Fatalf("New weak params: %v", err)
+	}
+}
+
+func TestAccessCacheWiring(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+
+	g, err := New(Config{DB: &pgxpool.Pool{}, Redis: rdb, RedisPrefix: "p1:"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.AccessStats(); ok {
+		t.Fatal("cache must be off by default")
+	}
+	if err := g.InvalidateAccess(ctx); err != nil {
+		t.Fatalf("invalidate without cache: %v", err)
+	}
+	if mr.Exists("p1:access:version") {
+		t.Fatal("no-cache invalidate touched redis")
+	}
+
+	logger, buf := testLogger()
+	g, err = New(Config{DB: &pgxpool.Pool{}, Redis: rdb, RedisPrefix: "p2:", Logger: logger, AccessCache: &accessinfra.CacheOptions{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.accessCache == nil {
+		t.Fatal("access cache not wired")
+	}
+	if st, ok := g.AccessStats(); !ok || st != (accessinfra.CacheStats{}) {
+		t.Fatalf("stats: %+v %v", st, ok)
+	}
+	if err := g.InvalidateAccess(ctx); err != nil {
+		t.Fatal(err)
+	}
+	v1, _ := mr.Get("p2:access:version")
+	if err := g.InvalidateAccess(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if v2, _ := mr.Get("p2:access:version"); v1 == "" || v1 == v2 {
+		t.Fatalf("version not bumped: %q -> %q", v1, v2)
+	}
+
+	opts := accessCacheOptions(accessinfra.CacheOptions{}, "p3:", logger)
+	if opts.Prefix != "p3:" {
+		t.Fatalf("prefix: %q", opts.Prefix)
+	}
+	opts.OnError(errBoom)
+	if !strings.Contains(buf.String(), "access cache") || !strings.Contains(buf.String(), "level=WARN") {
+		t.Fatalf("OnError not logged: %s", buf.String())
+	}
+	called := false
+	opts = accessCacheOptions(accessinfra.CacheOptions{Prefix: "own:", OnError: func(error) { called = true }}, "p3:", logger)
+	opts.OnError(errBoom)
+	if opts.Prefix != "own:" || !called {
+		t.Fatal("explicit options overridden")
+	}
+
+	gd, err := New(Config{DB: &pgxpool.Pool{}, Redis: rdb, AccessCache: &AccessCacheOptions{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := gd.InvalidateAccess(ctx); err != nil || !mr.Exists("guard:access:version") {
+		t.Fatalf("default prefix: %v", err)
+	}
+
+	mr.Close()
+	if err := g.InvalidateAccess(ctx); err == nil {
+		t.Fatal("want redis error")
+	}
+}
+
+func embeddedMigrationCount(t *testing.T, ref migrations.UserRef) int {
+	t.Helper()
+	fsys, err := migrations.Render(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names, _ := fs.Glob(fsys, "*.sql")
+	if len(names) < 4 {
+		t.Fatalf("embedded migrations: %v", names)
+	}
+	return len(names)
 }

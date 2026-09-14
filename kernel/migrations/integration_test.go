@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -155,7 +156,7 @@ func TestUpDownIntegration(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM guard_role), (SELECT count(*) FROM guard_policy)`).Scan(&roles, &policies); err != nil {
 		t.Fatal(err)
 	}
-	if roles != 2 || policies != 3 {
+	if roles != 3 || policies != 3 {
 		t.Fatalf("seed: roles=%d policies=%d", roles, policies)
 	}
 
@@ -217,5 +218,51 @@ func TestUpFromDirIntegration(t *testing.T) {
 	}
 	if err := Down(ctx, pool, dir, UserRef{}); err != nil {
 		t.Fatalf("Down from dir: %v", err)
+	}
+}
+
+// Two replicas starting at once must not race each other through the schema:
+// the session advisory lock serialises them and every migration runs once.
+func TestConcurrentUpIntegration(t *testing.T) {
+	ctx := context.Background()
+	pool := freshDB(t)
+	if _, err := pool.Exec(ctx, `CREATE TABLE users (id bigserial PRIMARY KEY)`); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := Detect(ctx, pool, "users", "id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const replicas = 2
+	errs := make([]error, replicas)
+	var wg sync.WaitGroup
+	for i := range replicas {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = Up(ctx, pool, "", ref)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("replica %d: %v", i, err)
+		}
+	}
+	var applied, distinct int
+	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT version_id) FROM `+VersionTable+` WHERE version_id > 0`).Scan(&applied, &distinct); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 6 || distinct != 6 {
+		t.Fatalf("applied=%d distinct=%d, want 6/6", applied, distinct)
+	}
+	var roles int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM guard_role`).Scan(&roles); err != nil || roles != 3 {
+		t.Fatalf("seed ran more than once: roles=%d err=%v", roles, err)
+	}
+	var idx int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND indexname IN
+		('guard_idx_role_permission_granted_by', 'guard_idx_user_role_granted_by', 'guard_idx_pcg_policy')`).Scan(&idx); err != nil || idx != 3 {
+		t.Fatalf("fk indexes = %d, err = %v", idx, err)
 	}
 }

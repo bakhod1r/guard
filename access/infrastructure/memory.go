@@ -233,3 +233,37 @@ func (m *Memory) ApplicablePolicies(ctx context.Context, resource, action string
 	}
 	return out, nil
 }
+
+// RoleHolders returns users holding a non-expired grant of role, sorted.
+func (m *Memory) RoleHolders(_ context.Context, role string) ([]string, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.holders(role), nil
+}
+
+func (m *Memory) holders(role string) []string {
+	now := time.Now()
+	out := []string{}
+	for user, roles := range m.grants {
+		if exp, ok := roles[role]; ok && (exp == nil || now.Before(*exp)) {
+			out = append(out, user)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// UnassignRoleChecked removes the grant only when check(holders) is nil; the
+// store lock serialises it against every other write.
+func (m *Memory) UnassignRoleChecked(_ context.Context, userID, role string, check func([]string) error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.roles[role]; !ok {
+		return nil
+	}
+	if err := check(m.holders(role)); err != nil {
+		return err
+	}
+	delete(m.grants[userID], role)
+	return nil
+}

@@ -350,10 +350,10 @@ func newEnv(t *testing.T, cfg envConfig) *env {
 
 func (e *env) account(id, email string) string {
 	e.t.Helper()
-	if _, err := e.g.CreateAccount(context.Background(), id, email, "password123", nil, guard.RequestMeta{}); err != nil {
+	if _, err := e.g.CreateAccount(context.Background(), id, email, "tr0ub4dor-guard-42", nil, guard.RequestMeta{}); err != nil {
 		e.t.Fatal(err)
 	}
-	return e.login(email, "password123")
+	return e.login(email, "tr0ub4dor-guard-42")
 }
 
 func TestHandlersRejectMalformedJSONWithInvalidBody(t *testing.T) {
@@ -400,17 +400,17 @@ func TestDomainErrorsMapToDocumentedStatusAndCode(t *testing.T) {
 		status                    int
 		code                      string
 	}{
-		{"register invalid email", "POST", "/auth/register", "", map[string]any{"email": "nope", "password": "password123"}, 400, "invalid_email"},
+		{"register invalid email", "POST", "/auth/register", "", map[string]any{"email": "nope", "password": "tr0ub4dor-guard-42"}, 400, "invalid_email"},
 		{"register weak password", "POST", "/auth/register", "", map[string]any{"email": "w@example.com", "password": "x"}, 400, "weak_password"},
-		{"register host CreateUser error", "POST", "/auth/register", "", map[string]any{"email": "host-fails@example.com", "password": "password123"}, 409, "email_taken"},
+		{"register host CreateUser error", "POST", "/auth/register", "", map[string]any{"email": "host-fails@example.com", "password": "tr0ub4dor-guard-42"}, 409, "email_taken"},
 		{"login invalid credentials", "POST", "/auth/login", "", map[string]any{"email": "admin@example.com", "password": "wrong-password"}, 401, "invalid_credentials"},
 		{"invalid status", "PUT", "/guard/users/2/status", e.admin, map[string]any{"status": "zombie"}, 400, "invalid_status"},
 		{"set status unknown user", "PUT", "/guard/users/404/status", e.admin, map[string]any{"status": "active"}, 404, "user_not_found"},
 		{"get unknown user", "GET", "/guard/users/404", e.admin, nil, 404, "user_not_found"},
 		{"attributes unknown user", "PUT", "/guard/users/404/attributes", e.admin, map[string]any{"attributes": map[string]any{"a": 1}}, 404, "user_not_found"},
-		{"reset password unknown user", "PUT", "/guard/users/404/password", e.admin, map[string]any{"password": "password123"}, 404, "user_not_found"},
-		{"invalid user id", "POST", "/guard/users/%20/account", e.admin, map[string]any{"email": "s@example.com", "password": "password123"}, 400, "invalid_user_id"},
-		{"account exists", "POST", "/guard/users/2/account", e.admin, map[string]any{"email": "o@example.com", "password": "password123"}, 409, "account_exists"},
+		{"reset password unknown user", "PUT", "/guard/users/404/password", e.admin, map[string]any{"password": "tr0ub4dor-guard-42"}, 404, "user_not_found"},
+		{"invalid user id", "POST", "/guard/users/%20/account", e.admin, map[string]any{"email": "s@example.com", "password": "tr0ub4dor-guard-42"}, 400, "invalid_user_id"},
+		{"account exists", "POST", "/guard/users/2/account", e.admin, map[string]any{"email": "o@example.com", "password": "tr0ub4dor-guard-42"}, 409, "account_exists"},
 		{"revoke unknown own session", "DELETE", "/auth/sessions/does-not-exist", e.admin, nil, 404, "session_not_found"},
 		{"invalid role name", "POST", "/guard/roles", e.admin, map[string]any{"name": "Bad Name!"}, 400, "invalid_name"},
 		{"invalid permission code", "POST", "/guard/permissions", e.admin, map[string]any{"code": "nodot"}, 400, "invalid_permission"},
@@ -435,7 +435,7 @@ func TestDomainErrorsMapToDocumentedStatusAndCode(t *testing.T) {
 		{"assign role past expiry", "POST", "/guard/users/2/roles", e.admin, map[string]any{"role": "user", "expires_at": past}, 400, "invalid_expiry"},
 		{"assign role unknown user", "POST", "/guard/users/404/roles", e.admin, map[string]any{"role": "user"}, 404, "user_not_found"},
 		{"non-admin forbidden", "GET", "/guard/roles", userTok, nil, 403, "forbidden"},
-		{"change password wrong old", "PUT", "/auth/password", userTok, map[string]any{"old_password": "wrong-password", "new_password": "password456"}, 401, "invalid_credentials"},
+		{"change password wrong old", "PUT", "/auth/password", userTok, map[string]any{"old_password": "wrong-password", "new_password": "tr0ub4dor-guard-43"}, 401, "invalid_credentials"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -466,14 +466,14 @@ func TestLockedAndBlockedAccounts(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		e.do("POST", "/auth/login", "", map[string]any{"email": "lock@example.com", "password": "wrong-password"})
 	}
-	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "lock@example.com", "password": "password123"}); r.code != 429 || r.errCode() != "account_locked" {
+	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "lock@example.com", "password": "tr0ub4dor-guard-42"}); r.code != 429 || r.errCode() != "account_locked" {
 		t.Fatalf("locked: %d %v", r.code, r.body)
 	}
 	e.account("3", "ban@example.com")
 	if r := e.do("PUT", "/guard/users/3/status", e.admin, map[string]any{"status": "suspended"}); r.code != 204 {
 		t.Fatalf("suspend: %d %v", r.code, r.body)
 	}
-	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "ban@example.com", "password": "password123"}); r.code != 403 || r.errCode() != "account_blocked" {
+	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "ban@example.com", "password": "tr0ub4dor-guard-42"}); r.code != 403 || r.errCode() != "account_blocked" {
 		t.Fatalf("blocked: %d %v", r.code, r.body)
 	}
 }
@@ -704,7 +704,7 @@ func TestLoginSetsHardenedCookie(t *testing.T) {
 
 func TestRegisterCreatesAccount(t *testing.T) {
 	e := newEnv(t, envConfig{createUser: func(context.Context, string) (string, error) { return "5", nil }})
-	r := e.do("POST", "/auth/register", "", map[string]any{"email": "new@example.com", "password": "password123"})
+	r := e.do("POST", "/auth/register", "", map[string]any{"email": "new@example.com", "password": "tr0ub4dor-guard-42"})
 	if r.code != 201 || r.body["id"] != "5" {
 		t.Fatalf("%d %v", r.code, r.body)
 	}

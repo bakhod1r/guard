@@ -1,0 +1,83 @@
+# guard.example.yaml - documented template for config.Load.
+# Copy to guard.yaml. ${VAR} is expanded from the environment before parsing;
+# keep secrets (passwords, URLs with credentials) ONLY in the environment.
+# Unknown keys are rejected.
+
+database:
+  # PostgreSQL connection URL (required). Example value:
+  # postgres://user:pass@host:5432/db?sslmode=require
+  url: "${DATABASE_URL}"
+
+redis:
+  # host:port of Redis (required).
+  addr: "${REDIS_ADDR}"
+  # Redis AUTH password. Empty string when unset.
+  password: "${REDIS_PASSWORD}"
+  # Logical database number (>= 0).
+  db: 0
+  # Prefix for every Guard key (sessions, rate limits, caches).
+  prefix: "guard:"
+
+# Host application's existing user table; Guard references it, never creates it.
+user_table: users
+# Primary key column of user_table; its type is detected for migrations.
+user_id_column: id
+# Role granted to newly created accounts. Empty: "user"; "-": no role.
+default_role: user
+
+session:
+  # Session expires after this long without activity.
+  idle: 30m
+  # Session expires this long after login regardless of activity.
+  absolute: 168h
+  # Max concurrent sessions per user; oldest are revoked. 0 = unlimited.
+  max_per_user: 0
+
+lockout:
+  # Failed logins before the account is temporarily locked.
+  attempts: 5
+  # Lock duration / failure counting window.
+  window: 15m
+
+audit:
+  # Buffered async audit writes. 0 = synchronous (no events lost on crash).
+  async_buffer: 0
+
+migrations:
+  # Where rendered SQL migrations are written (commit this directory).
+  dir: ./migrations/guard
+  # Write and apply migrations on startup. Set false to run them in a deploy step.
+  auto_apply: true
+
+http:
+  # Session cookie name.
+  cookie_name: guard_session
+  # Drops the Secure cookie flag. Local plain-HTTP development ONLY.
+  insecure_cookie: false
+  # Cookie Domain attribute. Empty: host-only cookie.
+  cookie_domain: ""
+  # Self-service routes prefix (login, logout, register, me).
+  auth_path: /auth
+  # Management API prefix (users, roles, policies, keys).
+  admin_path: /guard
+  # Extra origins allowed to send cookie-authenticated unsafe requests (CSRF).
+  # Example: ["app.example.com", "https://admin.example.com"]
+  trusted_origins: []
+  # Request body cap on Guard routes, bytes. 0 = 1 MiB default.
+  max_body_bytes: 1048576
+  # Send Strict-Transport-Security on plain HTTP (behind a TLS proxy).
+  hsts: false
+  # Per-IP throttle on login/register. limit 0 = default 10/min, -1 = disabled.
+  auth_rate_limit:
+    limit: 10
+    window: 1m
+
+autoseed:
+  # Create a permission per registered route at startup and grant them to super_role.
+  enabled: true
+  # Path prefix stripped before deriving "resource.action" (GET /api/reports -> reports.read).
+  prefix: /api
+  # Role receiving every derived permission. "-" disables the grant.
+  super_role: admin
+  # Path prefixes never seeded (Guard's own routes, admin panel).
+  exclude: [/api/auth, /api/guard, /guard-admin]

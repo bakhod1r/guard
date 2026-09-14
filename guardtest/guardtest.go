@@ -39,6 +39,7 @@ func New(rdb redis.UniversalClient, cfg guard.Config) *guard.Guard {
 func Seed(ctx context.Context, store *accessinfra.Memory) {
 	_ = store.CreateRole(ctx, &accessdomain.Role{Name: "admin", Title: "Administrator", IsSystem: true, Wildcard: true})
 	_ = store.CreateRole(ctx, &accessdomain.Role{Name: "user", Title: "User", IsSystem: true})
+	_ = store.CreateRole(ctx, &accessdomain.Role{Name: accessdomain.RoleSuperAdmin, Title: "Super administrator", IsSystem: true, Wildcard: true})
 	for _, code := range []string{"user.read", "user.write", "role.read", "role.write", "role.assign",
 		"permission.read", "permission.write", "policy.read", "policy.write", "session.read", "session.revoke", "audit.read", "apikey.read", "apikey.revoke"} {
 		p, _ := accessdomain.ParsePermission(code)
