@@ -71,3 +71,27 @@ func TestActiveSuperAdmins(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAuthorizeAccountChange(t *testing.T) {
+	sa := []Role{{Name: RoleSuperAdmin}}
+	adm := []Role{{Name: RoleAdmin}}
+	usr := []Role{{Name: "user"}}
+	cases := []struct {
+		name          string
+		actor, target []Role
+		self          bool
+		want          error
+	}{
+		{"admin on super admin", adm, sa, false, ErrForbidden},
+		{"admin on admin", adm, adm, false, ErrForbidden},
+		{"user role on admin", usr, adm, false, ErrForbidden},
+		{"admin on user", adm, usr, false, nil},
+		{"super admin on super admin", sa, sa, false, nil},
+		{"admin on self", adm, adm, true, nil},
+	}
+	for _, c := range cases {
+		if err := AuthorizeAccountChange(c.actor, c.target, c.self); !errors.Is(err, c.want) {
+			t.Errorf("%s: got %v want %v", c.name, err, c.want)
+		}
+	}
+}

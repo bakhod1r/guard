@@ -19,6 +19,23 @@ func (s *Service) authorizeActor(ctx context.Context, actorID, role string) erro
 	return domain.AuthorizeRoleChange(roles, role)
 }
 
+// AuthorizeAccountChange applies domain.AuthorizeAccountChange to actorID's
+// and userID's active roles.
+func (s *Service) AuthorizeAccountChange(ctx context.Context, actorID, userID string) error {
+	if actorID == userID {
+		return nil
+	}
+	actor, err := s.ActiveRoles(ctx, actorID)
+	if err != nil {
+		return err
+	}
+	target, err := s.ActiveRoles(ctx, userID)
+	if err != nil {
+		return err
+	}
+	return domain.AuthorizeAccountChange(actor, target, false)
+}
+
 func (s *Service) holders() (domain.RoleHolderRepository, error) {
 	h, ok := s.roles.(domain.RoleHolderRepository)
 	if !ok {

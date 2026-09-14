@@ -461,7 +461,11 @@ func (g *Guard) CreateAccount(ctx context.Context, userID, email, password strin
 }
 
 // ResetPassword sets a new password (admin action) and signs the user out everywhere.
+// Resetting an admin or super admin needs a super admin actor (ErrForbidden).
 func (g *Guard) ResetPassword(ctx context.Context, actorID, userID, password string) error {
+	if err := g.authorizeAccountChange(ctx, "password_reset", actorID, userID); err != nil {
+		return err
+	}
 	if err := g.Identity.SetPassword(ctx, identitydomain.UserID(userID), password); err != nil {
 		return err
 	}
@@ -580,7 +584,11 @@ func (g *Guard) Authorize(ctx context.Context, p *Principal, action string, res 
 }
 
 // SetUserStatus changes account status; blocking also revokes every session.
+// Changing an admin or super admin needs a super admin actor (ErrForbidden).
 func (g *Guard) SetUserStatus(ctx context.Context, actorID, userID string, status Status) error {
+	if err := g.authorizeAccountChange(ctx, "status", actorID, userID); err != nil {
+		return err
+	}
 	if err := g.changeStatus(ctx, userID, status); err != nil {
 		return err
 	}

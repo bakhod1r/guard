@@ -76,6 +76,24 @@ func (g *Guard) recordRoleChange(ctx context.Context, op, action, superAction, a
 	g.record(ctx, e)
 }
 
+// authorizeAccountChange refuses (ErrForbidden) account changes on an admin
+// or super admin by anyone but a super admin or the user themselves.
+func (g *Guard) authorizeAccountChange(ctx context.Context, op, actorID, userID string) error {
+	err := g.Access.AuthorizeAccountChange(ctx, actorID, userID)
+	if errors.Is(err, accessdomain.ErrForbidden) {
+		g.record(ctx, audit.Event{ActorID: actorID, Action: "superadmin.denied", Target: userID, Metadata: map[string]any{"op": op, "reason": err.Error()}})
+	}
+	return err
+}
+
+// SetAttributes replaces userID's ABAC attributes on behalf of actorID.
+func (g *Guard) SetAttributes(ctx context.Context, actorID, userID string, attrs map[string]any) error {
+	if err := g.authorizeAccountChange(ctx, "attributes", actorID, userID); err != nil {
+		return err
+	}
+	return g.Identity.SetAttributes(ctx, identitydomain.UserID(userID), attrs)
+}
+
 // superAdminBlocked reports whether super admin id can no longer act: banned,
 // suspended, or without an account.
 func (g *Guard) superAdminBlocked(ctx context.Context, id string) (bool, error) {

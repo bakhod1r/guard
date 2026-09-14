@@ -248,3 +248,40 @@ func TestUnassignSuperAdminHoldersError(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// failFor fails GrantsOf only for one user id.
+type failFor struct {
+	*infrastructure.Memory
+	id string
+}
+
+func (f *failFor) GrantsOf(ctx context.Context, u string) ([]domain.RoleGrant, error) {
+	if u == f.id {
+		return nil, errBoom
+	}
+	return f.Memory.GrantsOf(ctx, u)
+}
+
+func TestAuthorizeAccountChange(t *testing.T) {
+	s, m := superFixture(t)
+	ctx := context.Background()
+	if err := s.AssignRole(ctx, "adm2", domain.RoleAdmin, "root", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{"root", "adm2"} {
+		if err := s.AuthorizeAccountChange(ctx, "adm", target); !errors.Is(err, domain.ErrForbidden) {
+			t.Fatalf("adm on %s: %v", target, err)
+		}
+	}
+	for _, c := range [][2]string{{"adm", "bob"}, {"adm", "adm"}, {"root", "adm"}, {"bob", "bob"}} {
+		if err := s.AuthorizeAccountChange(ctx, c[0], c[1]); err != nil {
+			t.Fatalf("%s on %s: %v", c[0], c[1], err)
+		}
+	}
+	for _, id := range []string{"adm", "root"} {
+		f := &failFor{Memory: m, id: id}
+		if err := NewService(f, f).AuthorizeAccountChange(ctx, "adm", "root"); !errors.Is(err, errBoom) {
+			t.Fatalf("lookup %s: %v", id, err)
+		}
+	}
+}

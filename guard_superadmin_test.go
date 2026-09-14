@@ -260,3 +260,47 @@ func TestCheckSuperAdminStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGuardAccountChangesOnPrivilegedTarget(t *testing.T) {
+	e := newSuperEnv(t, false)
+	ctx := context.Background()
+	for _, id := range []string{"root", "root2", "adm", "adm2", "bob"} {
+		e.account(t, id)
+	}
+	for _, id := range []string{"root", "root2"} {
+		if _, err := e.g.EnsureSuperAdmin(ctx, id, id+"@example.com", saPW); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{"adm", "adm2"} {
+		if err := e.g.AssignRole(ctx, "root", id, accessdomain.RoleAdmin, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const newPW = "copper-meadow-violet-42"
+	for _, target := range []string{"root", "adm2"} {
+		if err := e.g.ResetPassword(ctx, "adm", target, newPW); !errors.Is(err, ErrForbidden) {
+			t.Fatalf("reset %s: %v", target, err)
+		}
+		if err := e.g.SetUserStatus(ctx, "adm", target, identitydomain.StatusBanned); !errors.Is(err, ErrForbidden) {
+			t.Fatalf("ban %s: %v", target, err)
+		}
+		if err := e.g.SetAttributes(ctx, "adm", target, map[string]any{"dept": "x"}); !errors.Is(err, ErrForbidden) {
+			t.Fatalf("attributes %s: %v", target, err)
+		}
+		if _, err := e.g.Identity.Authenticate(ctx, target+"@example.com", saPW); err != nil {
+			t.Fatalf("%s password changed: %v", target, err)
+		}
+	}
+	if ev := e.last(); ev.Action != "superadmin.denied" || ev.ActorID != "adm" {
+		t.Fatalf("audit %+v", ev)
+	}
+	if err := e.g.SetAttributes(ctx, "adm", "bob", map[string]any{"dept": "x"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][2]string{{"adm", "bob"}, {"adm", "adm"}, {"root", "adm2"}, {"root", "root2"}} {
+		if err := e.g.Access.AuthorizeAccountChange(ctx, c[0], c[1]); err != nil {
+			t.Fatalf("%s on %s: %v", c[0], c[1], err)
+		}
+	}
+}

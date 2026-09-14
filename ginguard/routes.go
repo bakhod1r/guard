@@ -460,7 +460,7 @@ func (h *handlers) setAttributes(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
-	if err := h.g.Identity.SetAttributes(c.Request.Context(), identitydomain.UserID(c.Param("id")), in.Attributes); err != nil {
+	if err := h.g.SetAttributes(c.Request.Context(), string(PrincipalFrom(c).User.ID), c.Param("id"), in.Attributes); err != nil {
 		fail(c, err)
 		return
 	}

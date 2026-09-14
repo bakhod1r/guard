@@ -15,7 +15,7 @@ const (
 )
 
 var (
-	ErrForbidden        = errors.New("access: only a super admin may grant or revoke admin roles")
+	ErrForbidden        = errors.New("access: only a super admin may grant or revoke admin roles or change an admin account")
 	ErrLastSuperAdmin   = errors.New("access: the last super admin cannot be removed or blocked")
 	ErrSuperAdminExpiry = errors.New("access: super admin grants cannot expire")
 	// ErrHoldersUnsupported is returned when the role repository cannot
@@ -41,6 +41,22 @@ func HasSuperAdmin(roles []Role) bool {
 func AuthorizeRoleChange(actorRoles []Role, role string) error {
 	if IsPrivilegedRole(role) && !HasSuperAdmin(actorRoles) {
 		return ErrForbidden
+	}
+	return nil
+}
+
+// AuthorizeAccountChange decides whether an actor holding actorRoles may
+// change the account (password, status, attributes) of a user holding
+// targetRoles. Taking over an admin or super admin account would bypass
+// AuthorizeRoleChange, so only a super admin may, except on their own account.
+func AuthorizeAccountChange(actorRoles, targetRoles []Role, self bool) error {
+	if self || HasSuperAdmin(actorRoles) {
+		return nil
+	}
+	for _, r := range targetRoles {
+		if IsPrivilegedRole(r.Name) {
+			return ErrForbidden
+		}
 	}
 	return nil
 }

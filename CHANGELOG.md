@@ -4,6 +4,9 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- Privilege escalation fix: `ResetPassword`, `SetUserStatus` and the new `Guard.SetAttributes` on a user holding `admin` or `super_admin` now require a super admin actor (`ErrForbidden`, audited as `superadmin.denied`); users may still change their own account. Previously any `user.write` holder could reset a super admin's password and log in as them. Admin panel and `ginguard` attribute routes use `Guard.SetAttributes`.
+
 ### Added
 - Identity (argon2id, lockout), Redis sessions (idle/absolute timeouts), RBAC and ABAC with priority-tiered policy decisions, audit log, goose migrations and Gin JSON API (`2e3734c`).
 - Scoped API keys (`gk_` tokens, SHA-256 at rest, expiry/revocation) and Redis sliding-window rate limiting with `X-RateLimit-*` headers (`735f97f`).

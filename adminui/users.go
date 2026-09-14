@@ -167,7 +167,7 @@ func (a *app) userAttributes(c *gin.Context) {
 		a.fail(c, userPath(id), fmt.Errorf("%w: attributes must be a JSON object", errBadInput))
 		return
 	}
-	if err := a.g.Identity.SetAttributes(c.Request.Context(), identitydomain.UserID(id), attrs); err != nil {
+	if err := a.g.SetAttributes(c.Request.Context(), a.actor(c), id, attrs); err != nil {
 		a.fail(c, userPath(id), err)
 		return
 	}
