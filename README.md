@@ -32,10 +32,11 @@ Guard is a Go-native security toolkit that simplifies authentication, authorizat
 | 🔐 Session management | 👥 Role-Based Access Control (RBAC) |
 | 🏷️ Attribute-Based Access Control (ABAC) | 🔑 API key authentication |
 | ⚡ Configurable rate limiting | 📋 Audit logs |
-| 🛡️ Security middleware | 🌐 Service-to-service authentication |
-| 📊 Security analytics support | 🔄 Automatic permission sync |
-| 🚀 Gin, Echo, Fiber, Chi, net/http | 💾 PostgreSQL, MySQL, Redis |
-| 🔌 Extensible plugin architecture | |
+| 🛡️ Security middleware (CSRF, headers, body limit) | 🔄 Automatic permission sync from routes |
+| 🖥️ Server-rendered admin panel | 👑 Protected super admin role |
+| 🚀 Gin | 💾 PostgreSQL, Redis |
+
+Planned (not yet available): Echo / Fiber / Chi / net/http adapters, MySQL, service-to-service authentication, security analytics, plugin architecture. See [Roadmap](#roadmap).
 
 ## Installation
 
