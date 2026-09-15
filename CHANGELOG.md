@@ -4,9 +4,10 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-## [v0.1.1] - 2026-09-15
+## [v0.1.2] - 2026-09-15
 
 ### Documentation
+- v0.1.1 was withdrawn: its tag pointed at a commit without this change.
 - README feature list now matches what ships: Gin only, PostgreSQL + Redis only. Echo/Fiber/Chi/net/http adapters, MySQL, service-to-service auth, security analytics and plugins are listed as planned.
 
 ## [v0.1.0] - 2026-09-14
