@@ -4,6 +4,8 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-09-16
+
 ### Added
 - **Framework-independent HTTP layer** `httpguard`: Guard's routes, middleware and hardening as plain `net/http` (`Mount` on any method+path router, `Handler` as a single `http.Handler`, `Authenticate`/`RequireAuth`/`RequireSession`/`Require`/`RequirePermission`/`RateLimit`/`Protect`/`ProtectMux`, `SecurityHeaders`, `LimitBody`, `ErrorLogging`). `Options.PathValue`, `Options.RoutePattern` and `Options.ClientIP` plug in a router's own accessors, so chi, gorilla/mux, httprouter, `ServeMux` and any `http.Handler` chain work with no adapter and no extra dependency. Route-derived permissions come with `httpguard.Routes`, `NewCollector`, `Autoseed` and `SyncRoutes`, since net/http has no route registry.
 - `adminui.Handler` serves the admin panel as one `http.Handler`, mountable on any framework.
