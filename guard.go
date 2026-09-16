@@ -194,6 +194,9 @@ func New(cfg Config) (*Guard, error) {
 	var cachePrefix string
 	if cfg.AccessCache != nil {
 		opts := accessCacheOptions(*cfg.AccessCache, cfg.RedisPrefix, logger)
+		if opts.L2 && cfg.Redis == nil {
+			logger.Warn("guard: access cache L2 requested without Redis, using the in-process cache only")
+		}
 		cached = accessinfra.NewCached(pg, pg, cfg.Redis, opts)
 		roles, policies, cachePrefix = cached, cached, opts.Prefix
 		if cachePrefix == "" {

@@ -87,6 +87,8 @@ r.Run(":8080")
 | `access_cache.enabled` | bool | `false` | `Config.AccessCache` (role/policy cache) |
 | `access_cache.ttl` | duration | `30s` | max staleness for writes bypassing Guard |
 | `access_cache.max_entries` | int | `10000` | per in-process map |
+| `access_cache.shared` | bool | `false` | also cache in Redis, shared by every instance behind the load balancer |
+| `access_cache.shared_ttl` | duration | `2 × ttl` | lifetime of a shared Redis entry |
 | `migrations.dir` | path | `./migrations/guard` | where rendered SQL is written |
 | `migrations.auto_apply` | bool | `true` | `Open` writes and applies migrations |
 | `http.cookie_name` | string | `guard_session` | session cookie name |

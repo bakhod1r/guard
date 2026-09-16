@@ -34,9 +34,27 @@ Guard is a Go-native security toolkit that simplifies authentication, authorizat
 | ⚡ Configurable rate limiting | 📋 Audit logs |
 | 🛡️ Security middleware (CSRF, headers, body limit) | 🔄 Automatic permission sync from routes |
 | 🖥️ Server-rendered admin panel | 👑 Protected super admin role |
-| 🚀 Gin | 💾 PostgreSQL, Redis |
+| 🚀 net/http, Gin, Echo, Fiber, Chi, Iris, Hertz, Beego, gorilla/mux, httprouter | 💾 PostgreSQL, Redis |
 
-Planned (not yet available): Echo / Fiber / Chi / net/http adapters, MySQL, service-to-service authentication, security analytics, plugin architecture. See [Roadmap](#roadmap).
+Planned (not yet available): MySQL, service-to-service authentication, security analytics, plugin architecture. See [Roadmap](#roadmap).
+
+## Frameworks
+
+The HTTP layer is plain `net/http` (`httpguard`): routes, middleware and the
+admin panel all come as `http.Handler`, so the `net/http` router family works
+with no adapter, and Echo, Fiber, Iris, Hertz and Beego get thin adapters in
+their own Go modules — installing Guard pulls none of them in.
+
+```go
+mux := http.NewServeMux()
+httpguard.Mount(mux, g, httpguard.Options{AuthPath: "/api/auth", AdminPath: "/api/guard"})
+mux.Handle("/guard-admin/", adminui.Handler(g, adminui.Options{}))
+mux.Handle("GET /api/invoices/{id}",
+    httpguard.RequirePermission(g, opts, "invoice.read")(invoiceHandler))
+```
+
+Full table, per-framework snippets and the path-parameter wiring for chi,
+gorilla/mux and httprouter: [docs/frameworks.md](docs/frameworks.md).
 
 ## Installation
 
@@ -167,7 +185,7 @@ Routes served by Guard's own handlers (`ginguard.Mount`, `adminui.Mount`) are sk
 
 ## Access cache
 
-`Config.AccessCache: &guard.AccessCacheOptions{}` (YAML `access_cache.enabled: true`) caches role grants and policies per instance and invalidates all instances through a Redis version key (default TTL 30s). Redis failures bypass to PostgreSQL. Call `g.InvalidateAccess(ctx)` after changes made outside Guard (e.g. deleting a host user); `g.AccessStats()` exposes hit/miss counters.
+`Config.AccessCache: &guard.AccessCacheOptions{}` (YAML `access_cache.enabled: true`) caches role grants and policies per instance and invalidates all instances through a Redis version key (default TTL 30s). Redis failures bypass to PostgreSQL. Behind a load balancer add `L2: true` (YAML `access_cache.shared: true`) to also keep the loaded grants and policies in Redis: an in-process miss on one instance is then served from the copy another instance loaded instead of from PostgreSQL, which matters most right after a deploy or an invalidation, when every instance would otherwise reload at once. Shared entries are namespaced by the same version key, so one write invalidates both levels; they expire after `L2TTL` (default twice `TTL`). Call `g.InvalidateAccess(ctx)` after changes made outside Guard (e.g. deleting a host user); `g.AccessStats()` exposes hit/miss counters.
 
 ## Layout (DDD)
 

@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -43,11 +45,24 @@ type CacheOptions struct {
 	LoadTimeout time.Duration
 	// OnError receives Redis failures. The cache then bypasses to the origin; it never fails a request.
 	OnError func(error)
+	// L2 also stores the loaded values in Redis, shared by every instance behind
+	// the load balancer: an in-process miss on one instance is served from the copy
+	// another instance loaded instead of from the origin. Requires a non-nil Redis
+	// client; ignored otherwise. Entries are namespaced by the version key, so a
+	// write invalidates L1 and L2 together.
+	L2 bool
+	// L2TTL bounds how long a shared Redis entry survives. <= 0 means twice TTL.
+	L2TTL time.Duration
 }
 
 // CacheStats are cumulative counters for hit-ratio and bypass dashboards.
 type CacheStats struct {
 	Hits, Misses, Bypasses, Evictions, InvalidationFailures uint64
+	// L2Hits/L2Misses count shared-Redis lookups, made only on an in-process miss.
+	// SerializeFailures counts unreadable or unwritable L2 payloads (the origin
+	// still answers). L2Distrusted counts reads that skipped L2 because an
+	// invalidation had failed.
+	L2Hits, L2Misses, SerializeFailures, L2Distrusted uint64
 }
 
 type cacheEntry[T any] struct {
@@ -80,17 +95,24 @@ type Cached struct {
 
 	rdb         redis.UniversalClient
 	versionKey  string
+	l2Prefix    string
+	l2          bool
+	l2TTL       time.Duration
 	ttl         time.Duration
 	max         int
 	loadTimeout time.Duration
 	onError     func(error)
 	now         func() time.Time
 	epoch       atomic.Uint64 // local writes; keeps this instance fresh without Redis
+	// l2DistrustUntil is a UnixNano deadline: a failed invalidation may have left
+	// the shared version unmoved, so L2 is neither read nor written until it passes.
+	l2DistrustUntil atomic.Int64
 
 	grants   *store[[]domain.RoleGrant]
 	policies *store[[]domain.Policy]
 
 	hits, misses, bypasses, evictions, invalidationFailures atomic.Uint64
+	l2Hits, l2Misses, serializeFailures, l2DistrustedReads  atomic.Uint64
 }
 
 // NewCached wraps roles and policies. rdb may be nil only for a single-instance
@@ -111,9 +133,13 @@ func NewCached(roles domain.RoleRepository, policies domain.PolicyRepository, rd
 	if opts.OnError == nil {
 		opts.OnError = func(error) {}
 	}
+	if opts.L2TTL <= 0 {
+		opts.L2TTL = 2 * opts.TTL
+	}
 	return &Cached{
 		RoleRepository: roles, PolicyRepository: policies,
 		rdb: rdb, versionKey: opts.Prefix + "access:version",
+		l2Prefix: opts.Prefix + "access:l2:", l2: opts.L2 && rdb != nil, l2TTL: opts.L2TTL,
 		ttl: opts.TTL, max: opts.MaxEntries, loadTimeout: opts.LoadTimeout, onError: opts.OnError, now: time.Now,
 		grants:   &store[[]domain.RoleGrant]{entries: map[string]cacheEntry[[]domain.RoleGrant]{}, inflight: map[string]*flight[[]domain.RoleGrant]{}, clone: cloneGrants},
 		policies: &store[[]domain.Policy]{entries: map[string]cacheEntry[[]domain.Policy]{}, inflight: map[string]*flight[[]domain.Policy]{}, clone: clonePolicies},
@@ -123,7 +149,9 @@ func NewCached(roles domain.RoleRepository, policies domain.PolicyRepository, rd
 // Stats returns cumulative counters. Hit ratio = Hits / (Hits + Misses + Bypasses).
 func (c *Cached) Stats() CacheStats {
 	return CacheStats{Hits: c.hits.Load(), Misses: c.misses.Load(), Bypasses: c.bypasses.Load(),
-		Evictions: c.evictions.Load(), InvalidationFailures: c.invalidationFailures.Load()}
+		Evictions: c.evictions.Load(), InvalidationFailures: c.invalidationFailures.Load(),
+		L2Hits: c.l2Hits.Load(), L2Misses: c.l2Misses.Load(),
+		SerializeFailures: c.serializeFailures.Load(), L2Distrusted: c.l2DistrustedReads.Load()}
 }
 
 // randomSeed is a random 62-bit start value. After a Redis flush the counter
@@ -177,17 +205,108 @@ func (c *Cached) invalidate(ctx context.Context) {
 	if err != nil {
 		c.invalidationFailures.Add(1)
 		c.onError(err)
+		// The shared version may not have moved, so every L2 entry this write made
+		// stale would still look current. Stop trusting L2 until they expire.
+		c.l2DistrustUntil.Store(c.now().Add(c.l2TTL).UnixNano())
 	}
 }
 
-func cachedLoad[T any](ctx context.Context, c *Cached, s *store[T], key string, load func(context.Context) (T, error)) (T, error) {
+// l2Kind namespaces the two cached reads inside the L2 key space.
+type l2Kind string
+
+const (
+	l2Grants   l2Kind = "g"
+	l2Policies l2Kind = "p"
+)
+
+// l2Token is the shared half of the version: the Redis counter, without this
+// instance's local epoch. Every instance behind the load balancer computes the
+// same token, so they share one set of L2 keys.
+func (c *Cached) l2Token(ctx context.Context) (string, bool) {
+	version, ok := c.version(ctx)
+	if !ok {
+		return "", false
+	}
+	_, token, found := strings.Cut(version, "/")
+	return token, found
+}
+
+func (c *Cached) l2Key(token string, kind l2Kind, key string) string {
+	return c.l2Prefix + token + ":" + string(kind) + ":" + key
+}
+
+// l2Trusted reports whether a failed invalidation window is still open.
+func (c *Cached) l2Trusted() bool {
+	until := c.l2DistrustUntil.Load()
+	return until == 0 || c.now().UnixNano() >= until
+}
+
+// l2Load wraps an origin load with the shared Redis copy. Redis never fails a
+// request: any error falls through to the origin.
+func l2Load[T any](c *Cached, kind l2Kind, key string, load func(context.Context) (T, error)) func(context.Context, string) (T, error) {
+	return func(ctx context.Context, version string) (T, error) {
+		if !c.l2 {
+			return load(ctx)
+		}
+		if !c.l2Trusted() {
+			c.l2DistrustedReads.Add(1)
+			return load(ctx)
+		}
+		_, token, found := strings.Cut(version, "/")
+		if !found {
+			return load(ctx)
+		}
+		redisKey := c.l2Key(token, kind, key)
+
+		raw, err := c.rdb.Get(ctx, redisKey).Bytes()
+		switch {
+		case err == nil:
+			var value T
+			if err = json.Unmarshal(raw, &value); err == nil {
+				c.l2Hits.Add(1)
+				return value, nil
+			}
+			c.serializeFailures.Add(1)
+			c.onError(err)
+		case errors.Is(err, redis.Nil):
+			c.l2Misses.Add(1)
+		default:
+			c.onError(err)
+			return load(ctx) // Redis is unreachable: do not try to write back.
+		}
+
+		value, err := load(ctx)
+		if err != nil {
+			return value, err
+		}
+		c.storeL2(ctx, redisKey, value)
+		return value, nil
+	}
+}
+
+func (c *Cached) storeL2(ctx context.Context, key string, value any) {
+	if !c.l2Trusted() {
+		return
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		c.serializeFailures.Add(1)
+		c.onError(err)
+		return
+	}
+	if err := c.rdb.Set(ctx, key, raw, c.l2TTL).Err(); err != nil {
+		c.onError(err)
+	}
+}
+
+func cachedLoad[T any](ctx context.Context, c *Cached, s *store[T], key string, load func(context.Context, string) (T, error)) (T, error) {
 	var zero T
 	// The version is read BEFORE loading: a write racing the load bumps it, so
 	// the (possibly stale) result is stored under an already-dead tag.
 	version, ok := c.version(ctx)
 	if !ok {
 		c.bypasses.Add(1)
-		return load(ctx)
+		return load(ctx, "")
 	}
 	now := c.now()
 	s.mu.Lock()
@@ -217,10 +336,10 @@ func cachedLoad[T any](ctx context.Context, c *Cached, s *store[T], key string, 
 }
 
 // runFlight performs one coalesced origin load detached from any single caller.
-func runFlight[T any](ctx context.Context, c *Cached, s *store[T], f *flight[T], fk, key, version string, now time.Time, load func(context.Context) (T, error)) {
+func runFlight[T any](ctx context.Context, c *Cached, s *store[T], f *flight[T], fk, key, version string, now time.Time, load func(context.Context, string) (T, error)) {
 	lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.loadTimeout)
 	defer cancel()
-	f.value, f.err = load(lctx)
+	f.value, f.err = load(lctx, version)
 
 	s.mu.Lock()
 	delete(s.inflight, fk)
@@ -310,15 +429,18 @@ func cloneSlice[T any](in []T) []T {
 // ---------- cached reads ----------
 
 func (c *Cached) GrantsOf(ctx context.Context, userID string) ([]domain.RoleGrant, error) {
-	return cachedLoad(ctx, c, c.grants, userID, func(ctx context.Context) ([]domain.RoleGrant, error) {
-		return c.RoleRepository.GrantsOf(ctx, userID)
-	})
+	return cachedLoad(ctx, c, c.grants, userID, l2Load(c, l2Grants, userID,
+		func(ctx context.Context) ([]domain.RoleGrant, error) {
+			return c.RoleRepository.GrantsOf(ctx, userID)
+		}))
 }
 
 func (c *Cached) ApplicablePolicies(ctx context.Context, resource, action string) ([]domain.Policy, error) {
-	return cachedLoad(ctx, c, c.policies, resource+"\x00"+action, func(ctx context.Context) ([]domain.Policy, error) {
-		return c.PolicyRepository.ApplicablePolicies(ctx, resource, action)
-	})
+	key := resource + "\x00" + action
+	return cachedLoad(ctx, c, c.policies, key, l2Load(c, l2Policies, resource+":"+action,
+		func(ctx context.Context) ([]domain.Policy, error) {
+			return c.PolicyRepository.ApplicablePolicies(ctx, resource, action)
+		}))
 }
 
 // ---------- writes: origin first, then invalidate ----------

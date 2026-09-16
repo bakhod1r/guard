@@ -82,6 +82,10 @@ type File struct {
 		Enabled    bool     `yaml:"enabled"`
 		TTL        Duration `yaml:"ttl"`
 		MaxEntries int      `yaml:"max_entries"`
+		// Shared enables the Redis-backed second level, shared by every instance
+		// behind a load balancer.
+		Shared    bool     `yaml:"shared"`
+		SharedTTL Duration `yaml:"shared_ttl"`
 	} `yaml:"access_cache"`
 	Migrations struct {
 		Dir       string `yaml:"dir"`
@@ -169,6 +173,7 @@ func (f *File) Validate() error {
 		{"audit.redis_buffer.interval", int64(f.Audit.RedisBuffer.Interval)},
 		{"access_cache.ttl", int64(f.AccessCache.TTL)},
 		{"access_cache.max_entries", int64(f.AccessCache.MaxEntries)},
+		{"access_cache.shared_ttl", int64(f.AccessCache.SharedTTL)},
 		{"http.max_body_bytes", f.HTTP.MaxBodyBytes},
 		{"http.auth_rate_limit.window", int64(f.HTTP.AuthRateLimit.Window)},
 	}
@@ -213,7 +218,8 @@ func (f *File) guardConfig() guard.Config {
 	}
 	c.AuditEmailKey, _ = f.auditEmailKey() // validated in Parse
 	if f.AccessCache.Enabled {
-		c.AccessCache = &guard.AccessCacheOptions{TTL: time.Duration(f.AccessCache.TTL), MaxEntries: f.AccessCache.MaxEntries}
+		c.AccessCache = &guard.AccessCacheOptions{TTL: time.Duration(f.AccessCache.TTL), MaxEntries: f.AccessCache.MaxEntries,
+			L2: f.AccessCache.Shared, L2TTL: time.Duration(f.AccessCache.SharedTTL)}
 	}
 	return c
 }
