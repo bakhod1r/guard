@@ -41,7 +41,15 @@ jobs:
         with:
           version: v2.13.2
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+        # setup-go installs the go.mod "go" line (1.26.0), and "go run tool@version"
+        # runs outside this module, so the "toolchain" directive never applies and
+        # the scan reports every fix released in the patch releases since .0. Scan
+        # with the toolchain the module actually pins, read from go.mod so the
+        # version stays defined in one place.
+        run: |
+          toolchain=$(awk '/^toolchain /{print $2}' go.mod)
+          echo "scanning with ${toolchain:-the default toolchain}"
+          GOTOOLCHAIN=$toolchain go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   adapters:
     name: framework adapters
