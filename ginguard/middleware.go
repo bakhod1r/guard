@@ -38,7 +38,8 @@ type Options struct {
 	// AuthRateLimit throttles /login and /register per client IP.
 	// Zero value: 10 requests per minute. Limit < 0 disables.
 	AuthRateLimit ratelimit.Rule
-	// TrustedOrigins lists hosts ("app.example.com" or "https://app.example.com")
+	// TrustedOrigins lists origins: "https://app.example.com" also pins the
+	// scheme, a bare "app.example.com" accepts any scheme
 	// allowed to send unsafe (POST/PUT/PATCH/DELETE) requests authenticated by
 	// the session cookie. Empty: only the request's own Host; when set, the own
 	// Host is NOT implied, so list it too if needed. Requests carrying

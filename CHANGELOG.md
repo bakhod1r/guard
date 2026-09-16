@@ -4,6 +4,16 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+### Security
+- **Privilege model (breaking):** "privileged" is no longer just the names `admin`/`super_admin`. Any wildcard role and any role holding `role.write`, `role.assign` or `policy.write` is privileged (`domain.Role.Privileged`), as is any policy on resource `*`, `role` or `policy` (`domain.Policy.Privileged`). Only a super admin may create a wildcard role, grant/revoke a management permission, assign/unassign/delete a privileged role, write/replace/delete a privileged policy, or change the account of a privileged role holder. Previously an admin could create a wildcard role or an allow-all policy and bypass the super admin boundary. New `Access.CreateRoleAs`, `DeleteRoleAs`, `RevokePermissionAs`, `SavePolicyAs`, `DeletePolicyAs`; `GrantPermission` checks a non-empty `grantedBy`. The JSON API and admin panel use them. Non-`As` methods stay trusted system calls.
+- **Login lost update:** a login in flight could write back the account row it read, undoing a concurrent ban or password reset, and parallel guesses shared one lockout counter. New optional `identity/domain.AccountWriter` (implemented by PostgreSQL and memory stores) makes every account write column-level and atomic; attempts are reserved before the password check. `Guard.Login` re-reads the account after starting the session and revokes it if the hash or status changed.
+- `Guard.ResetPassword` also revokes every API key of the user.
+- `POST /login` (JSON API and admin panel) answers locked, banned and suspended accounts with `401 invalid_credentials`; the audit event keeps the cause. Previously distinct responses enumerated accounts and confirmed passwords of banned users.
+- argon2id computations are bounded process-wide (`max(2, GOMAXPROCS)`) so parallel logins cannot exhaust memory; the unknown-email dummy hash now uses the configured hasher so timing matches custom parameters.
+- `Guard.SetAttributes` refuses a user changing their own ABAC attributes unless super admin.
+- Admin panel user page shows sessions and API keys only with `session.read` / `apikey.read`.
+- `TrustedOrigins` entries with a scheme (`https://app.example.com`) now also require that scheme.
+
 ## [v0.1.2] - 2026-09-15
 
 ### Documentation

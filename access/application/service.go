@@ -102,10 +102,18 @@ func (s *Service) ListPermissions(ctx context.Context) ([]domain.Permission, err
 	return s.roles.ListPermissions(ctx)
 }
 
+// GrantPermission adds code to role. A non-empty grantedBy is the acting
+// user: a management permission then needs a super admin. An empty grantedBy
+// is a trusted system call.
 func (s *Service) GrantPermission(ctx context.Context, role, code, grantedBy string) error {
 	p, err := domain.ParsePermission(code)
 	if err != nil {
 		return err
+	}
+	if grantedBy != "" {
+		if err := s.requireSuperAdmin(ctx, grantedBy, domain.IsManagementPermission(p.Code())); err != nil {
+			return err
+		}
 	}
 	return s.roles.GrantPermission(ctx, role, p, grantedBy)
 }
@@ -118,8 +126,8 @@ func (s *Service) RevokePermission(ctx context.Context, role, code string) error
 	return s.roles.RevokePermission(ctx, role, p)
 }
 
-// AssignRole grants role. A non-empty grantedBy is the acting user: admin and
-// super_admin grants then require that actor to be a super admin. An empty
+// AssignRole grants role. A non-empty grantedBy is the acting user: a
+// privileged role (domain.Role.Privileged) then requires a super admin actor. An empty
 // grantedBy is a trusted system call (bootstrap). super_admin never expires.
 func (s *Service) AssignRole(ctx context.Context, userID, role, grantedBy string, expiresAt *time.Time) error {
 	if role == domain.RoleSuperAdmin && expiresAt != nil {

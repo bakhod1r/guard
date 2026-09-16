@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"golang.org/x/crypto/argon2"
@@ -37,13 +38,25 @@ func NewArgon2HasherWithParams(memory, time uint32, threads uint8, keyLen, saltL
 	return &Argon2Hasher{Memory: memory, Time: time, Threads: threads, KeyLen: keyLen, SaltLen: saltLen}, nil
 }
 
+// hashSlots bounds concurrent argon2id computations process-wide. Each one
+// holds Memory KiB (64 MiB by default), so unbounded parallel logins could
+// exhaust memory; extra callers queue instead.
+var hashSlots = make(chan struct{}, max(2, runtime.GOMAXPROCS(0)))
+
+// idKey is argon2.IDKey under hashSlots.
+func idKey(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte {
+	hashSlots <- struct{}{}
+	defer func() { <-hashSlots }()
+	return argon2.IDKey(password, salt, time, memory, threads, keyLen)
+}
+
 var errBadHash = errors.New("identity: malformed password hash")
 
 func (h *Argon2Hasher) Hash(plain string) (string, error) {
 	salt := make([]byte, h.SaltLen)
 	// crypto/rand.Read never returns an error (it crashes the program instead).
 	_, _ = rand.Read(salt)
-	key := argon2.IDKey([]byte(plain), salt, h.Time, h.Memory, h.Threads, h.KeyLen)
+	key := idKey([]byte(plain), salt, h.Time, h.Memory, h.Threads, h.KeyLen)
 	b64 := base64.RawStdEncoding
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, h.Memory, h.Time, h.Threads, b64.EncodeToString(salt), b64.EncodeToString(key)), nil
@@ -85,7 +98,7 @@ func (h *Argon2Hasher) Verify(plain, encoded string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	got := argon2.IDKey([]byte(plain), p.salt, p.time, p.memory, p.threads, uint32(len(p.key))) //nolint:gosec // key length bounded by decodeArgon2
+	got := idKey([]byte(plain), p.salt, p.time, p.memory, p.threads, uint32(len(p.key))) //nolint:gosec // key length bounded by decodeArgon2
 	return subtle.ConstantTimeCompare(got, p.key) == 1, nil
 }
 

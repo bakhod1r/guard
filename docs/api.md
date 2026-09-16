@@ -85,9 +85,9 @@ Body: `{"error": {"code": "<code>", "message": "<text>"}}`.
 | 400 | `invalid_expiry` | `apikey.ErrBadExpiry`; `expires_at` not in the future; `access.ErrSuperAdminExpiry` (super_admin grants cannot expire) |
 | 401 | `unauthenticated` | no credential; session not found/expired; user blocked; `apikey.ErrKeyInvalid` |
 | 401 | `invalid_credentials` | `identity.ErrInvalidCredentials` |
-| 403 | `forbidden` | authorization decision denied; `access.ErrForbidden` (non-super-admin granting/revoking `admin`/`super_admin`) |
+| 403 | `forbidden` | authorization decision denied; `access.ErrForbidden` (non-super-admin changing a privileged role, management permission or privileged policy, or a privileged user's account) |
 | 403 | `session_required` | API key used on a session-only route |
-| 403 | `account_blocked` | `identity.ErrUserBlocked` |
+| 403 | `account_blocked` | `identity.ErrUserBlocked` (never from `POST /login`, see below) |
 | 404 | `user_not_found` | `identity.ErrUserNotFound`, `access.ErrSubjectNotFound`, `apikey.ErrOwnerNotFound` |
 | 404 | `session_not_found` | `session.ErrSessionNotFound` |
 | 404 | `role_not_found` / `permission_not_found` / `policy_not_found` | access repository misses |
@@ -98,8 +98,10 @@ Body: `{"error": {"code": "<code>", "message": "<text>"}}`.
 | 409 | `policy_name_taken` | `access.ErrPolicyNameTaken` |
 | 409 | `system_role` | `access.ErrSystemRole` |
 | 409 | `last_super_admin` | `access.ErrLastSuperAdmin` (last super admin unassigned, banned or suspended) |
-| 429 | `account_locked` | `identity.ErrUserLocked` (lockout) |
+| 429 | `account_locked` | `identity.ErrUserLocked` (never from `POST /login`, see below) |
 | 429 | `rate_limited` | rate limiter; sets `Retry-After` and `X-RateLimit-*` |
 | 500 | `internal` | anything unmapped; message is always `internal error`, cause attached via `c.Error` |
+
+`POST /login` answers a locked, banned or suspended account with `401 invalid_credentials`, like a wrong password: distinct codes would enumerate accounts and confirm passwords. The cause is kept in the `auth.login` audit event.
 
 Note: mapped errors return `err.Error()` as `message`; do not surface wrapped infrastructure errors through mapped sentinels.

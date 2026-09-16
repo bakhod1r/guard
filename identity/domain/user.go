@@ -95,6 +95,17 @@ func (u *User) RecordFailedLogin(now time.Time, l Lockout) {
 	u.UpdatedAt = now
 }
 
+// ReserveAttempt counts a login attempt before the password is checked, so
+// concurrent guesses cannot share one counter value. It refuses (false,
+// nothing counted) while the account is locked.
+func (u *User) ReserveAttempt(now time.Time, l Lockout) bool {
+	if u.Locked(now, l) {
+		return false
+	}
+	u.RecordFailedLogin(now, l)
+	return true
+}
+
 func (u *User) RecordLogin(now time.Time) {
 	u.FailedAttempts = 0
 	u.LastFailedAt = nil
@@ -126,6 +137,24 @@ type UserRepository interface {
 	Update(ctx context.Context, u *User) error
 	// List returns one page of accounts matching q plus the total match count.
 	List(ctx context.Context, q ListQuery) ([]User, int, error)
+}
+
+// AccountWriter is an optional UserRepository capability: column-level atomic
+// writes, so a login in flight never overwrites a concurrent ban, password
+// reset or attribute change with the values it read earlier.
+type AccountWriter interface {
+	// ReserveAttempt atomically applies User.ReserveAttempt. It returns false
+	// when the account is locked (or gone).
+	ReserveAttempt(ctx context.Context, id UserID, now time.Time, l Lockout) (bool, error)
+	// RecordLogin clears the attempt count, stamps the login and stores
+	// newHash, but only while the stored hash is still verifiedHash and the
+	// status allows login; otherwise ErrInvalidCredentials.
+	RecordLogin(ctx context.Context, id UserID, now time.Time, verifiedHash, newHash string) error
+	// SetSecret stores hash and clears the lockout. A non-empty oldHash makes
+	// it conditional: ErrInvalidCredentials when the stored hash differs.
+	SetSecret(ctx context.Context, id UserID, oldHash, hash string, now time.Time) error
+	SetStatus(ctx context.Context, id UserID, status Status, now time.Time) error
+	SetAttributes(ctx context.Context, id UserID, attrs map[string]any, now time.Time) error
 }
 
 // ListQuery filters account listings. Search matches an email substring

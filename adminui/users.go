@@ -95,6 +95,7 @@ type userDetailData struct {
 	Roles                                                 []guard.Role
 	Statuses                                              []identitydomain.Status
 	CanWrite, CanAssign, CanRevokeSessions, CanRevokeKeys bool
+	CanReadSessions, CanReadKeys                          bool
 	SuperAdmin                                            bool
 }
 
@@ -117,10 +118,18 @@ func (a *app) userDetail(c *gin.Context) {
 	d := userDetailData{Account: u, Statuses: userStatuses,
 		CanWrite: a.can(c, "user.write"), CanAssign: a.can(c, "role.assign"),
 		CanRevokeSessions: a.can(c, "session.revoke"), CanRevokeKeys: a.can(c, "apikey.revoke")}
+	// Sessions (IP, user agent) and API keys need their own read permission,
+	// as on the JSON API; user.read alone does not disclose them.
+	owned := guard.Resource{ID: id, Attributes: map[string]any{"owner_id": id}}
+	d.CanReadSessions, d.CanReadKeys = a.canOn(c, "session.read", owned), a.canOn(c, "apikey.read", owned)
 	var e1, e2, e3, e4 error
 	d.Grants, e1 = a.g.Access.Grants(ctx, id)
-	d.Sessions, e2 = a.g.Sessions.List(ctx, id)
-	d.APIKeys, e3 = a.g.APIKeys.List(ctx, id)
+	if d.CanReadSessions {
+		d.Sessions, e2 = a.g.Sessions.List(ctx, id)
+	}
+	if d.CanReadKeys {
+		d.APIKeys, e3 = a.g.APIKeys.List(ctx, id)
+	}
 	d.Roles, e4 = a.g.Access.ListRoles(ctx)
 	if err := errors.Join(e1, e2, e3, e4); err != nil {
 		a.usersError(c, http.StatusInternalServerError, "internal error", err)

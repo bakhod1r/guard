@@ -328,6 +328,10 @@ func TestPoliciesInternalErrorsHidden(t *testing.T) {
 	adminui.Mount(r, g, adminui.Options{InsecureCookie: true})
 	p := &panel{t: t, g: g, r: r}
 	p.account("1", "admin@example.com", true)
+	// The seed "*" policy is privileged: only a super admin may toggle it.
+	if err := g.Access.AssignRole(context.Background(), "1", guard.RoleSuperAdmin, "", nil); err != nil {
+		t.Fatal(err)
+	}
 	p.login("admin@example.com")
 	seed := "00000000-0000-0000-0000-000000000003"
 

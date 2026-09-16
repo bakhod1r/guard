@@ -51,4 +51,4 @@ The panel uses the same session cookie as `ginguard`; logging in at `/guard-admi
 
 ## Super admin
 
-Prefer `g.EnsureSuperAdmin(ctx, userID, email, password)` (`GUARD_SUPERADMIN_EMAIL` / `GUARD_SUPERADMIN_PASSWORD` in `examples/gin`). Only super admins can grant or revoke `admin` and `super_admin`; the panel shows a super admin badge and refuses to remove, ban or suspend the last one. The **Routes** page (`GET /routes`, `permission.read`) lists the discovered route registry, stale routes included.
+Prefer `g.EnsureSuperAdmin(ctx, userID, email, password)` (`GUARD_SUPERADMIN_EMAIL` / `GUARD_SUPERADMIN_PASSWORD` in `examples/gin`). Only super admins can grant, revoke or delete privileged roles (`admin`, `super_admin`, wildcard roles, roles holding `role.write`/`role.assign`/`policy.write`), create wildcard roles or edit policies on `*`/`role`/`policy`; the panel shows a super admin badge and refuses to remove, ban or suspend the last one. The **Routes** page (`GET /routes`, `permission.read`) lists the discovered route registry, stale routes included.

@@ -2,21 +2,102 @@ package application
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/bakhod1r/guard/access/domain"
 )
 
-// authorizeActor applies domain.AuthorizeRoleChange to actorID's active roles.
+// authorizeActor requires actorID to be a super admin when role is
+// privileged (domain.Role.Privileged). An unknown role is not privileged; the
+// grant itself then fails with ErrRoleNotFound.
 func (s *Service) authorizeActor(ctx context.Context, actorID, role string) error {
-	if !domain.IsPrivilegedRole(role) {
+	privileged := domain.IsPrivilegedRole(role)
+	if !privileged {
+		r, err := s.roles.Role(ctx, role)
+		switch {
+		case err == nil:
+			privileged = r.Privileged()
+		case !errors.Is(err, domain.ErrRoleNotFound):
+			return err
+		}
+	}
+	return s.requireSuperAdmin(ctx, actorID, privileged)
+}
+
+// requireSuperAdmin applies domain.RequireSuperAdmin to actorID's active roles.
+func (s *Service) requireSuperAdmin(ctx context.Context, actorID string, privileged bool) error {
+	if !privileged {
 		return nil
 	}
 	roles, err := s.ActiveRoles(ctx, actorID)
 	if err != nil {
 		return err
 	}
-	return domain.AuthorizeRoleChange(roles, role)
+	return domain.RequireSuperAdmin(roles, true)
+}
+
+// CreateRoleAs is CreateRole on behalf of actorID: a wildcard role needs a super admin.
+func (s *Service) CreateRoleAs(ctx context.Context, actorID, name, title, description string, wildcard bool) (*domain.Role, error) {
+	if err := s.requireSuperAdmin(ctx, actorID, wildcard); err != nil {
+		return nil, err
+	}
+	return s.CreateRole(ctx, name, title, description, wildcard)
+}
+
+// DeleteRoleAs is DeleteRole on behalf of actorID: a privileged role needs a super admin.
+func (s *Service) DeleteRoleAs(ctx context.Context, actorID, name string) error {
+	role, err := s.roles.Role(ctx, name)
+	if err != nil {
+		return err
+	}
+	if role.IsSystem {
+		return domain.ErrSystemRole
+	}
+	if err := s.requireSuperAdmin(ctx, actorID, role.Privileged()); err != nil {
+		return err
+	}
+	return s.roles.DeleteRole(ctx, name)
+}
+
+// RevokePermissionAs is RevokePermission on behalf of actorID: a management
+// permission needs a super admin.
+func (s *Service) RevokePermissionAs(ctx context.Context, actorID, role, code string) error {
+	if err := s.requireSuperAdmin(ctx, actorID, domain.IsManagementPermission(code)); err != nil {
+		return err
+	}
+	return s.RevokePermission(ctx, role, code)
+}
+
+// SavePolicyAs is SavePolicy on behalf of actorID: writing a privileged
+// policy, or replacing one, needs a super admin.
+func (s *Service) SavePolicyAs(ctx context.Context, actorID string, p *domain.Policy) error {
+	privileged := p.Privileged()
+	if !privileged && p.ID != "" {
+		old, err := s.policies.Policy(ctx, p.ID)
+		switch {
+		case err == nil:
+			privileged = old.Privileged()
+		case !errors.Is(err, domain.ErrPolicyNotFound):
+			return err
+		}
+	}
+	if err := s.requireSuperAdmin(ctx, actorID, privileged); err != nil {
+		return err
+	}
+	return s.SavePolicy(ctx, p)
+}
+
+// DeletePolicyAs is DeletePolicy on behalf of actorID: a privileged policy needs a super admin.
+func (s *Service) DeletePolicyAs(ctx context.Context, actorID, id string) error {
+	p, err := s.policies.Policy(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.requireSuperAdmin(ctx, actorID, p.Privileged()); err != nil {
+		return err
+	}
+	return s.DeletePolicy(ctx, id)
 }
 
 // AuthorizeAccountChange applies domain.AuthorizeAccountChange to actorID's

@@ -207,7 +207,7 @@ func TestAdminRBACAndABAC(t *testing.T) {
 	if code, _ := c.do("GET", "/api/invoices/1", userTok, nil); code != http.StatusUnauthorized {
 		t.Fatalf("banned session still valid: %d", code)
 	}
-	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "user@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusForbidden {
+	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "user@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusUnauthorized {
 		t.Fatalf("banned login: %d", code)
 	}
 
@@ -222,7 +222,7 @@ func TestLockout(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		c.do("POST", "/api/auth/login", "", map[string]any{"email": "x@example.com", "password": "wrong-pass"})
 	}
-	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "x@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusTooManyRequests {
+	if code, _ := c.do("POST", "/api/auth/login", "", map[string]any{"email": "x@example.com", "password": "tr0ub4dor-guard-42"}); code != http.StatusUnauthorized {
 		t.Fatalf("lockout not enforced: %d", code)
 	}
 }

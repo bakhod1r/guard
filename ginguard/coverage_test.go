@@ -466,14 +466,14 @@ func TestLockedAndBlockedAccounts(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		e.do("POST", "/auth/login", "", map[string]any{"email": "lock@example.com", "password": "wrong-password"})
 	}
-	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "lock@example.com", "password": "tr0ub4dor-guard-42"}); r.code != 429 || r.errCode() != "account_locked" {
+	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "lock@example.com", "password": "tr0ub4dor-guard-42"}); r.code != 401 || r.errCode() != "invalid_credentials" {
 		t.Fatalf("locked: %d %v", r.code, r.body)
 	}
 	e.account("3", "ban@example.com")
 	if r := e.do("PUT", "/guard/users/3/status", e.admin, map[string]any{"status": "suspended"}); r.code != 204 {
 		t.Fatalf("suspend: %d %v", r.code, r.body)
 	}
-	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "ban@example.com", "password": "tr0ub4dor-guard-42"}); r.code != 403 || r.errCode() != "account_blocked" {
+	if r := e.do("POST", "/auth/login", "", map[string]any{"email": "ban@example.com", "password": "tr0ub4dor-guard-42"}); r.code != 401 || r.errCode() != "invalid_credentials" {
 		t.Fatalf("blocked: %d %v", r.code, r.body)
 	}
 }

@@ -87,9 +87,21 @@ func (g *Guard) authorizeAccountChange(ctx context.Context, op, actorID, userID 
 }
 
 // SetAttributes replaces userID's ABAC attributes on behalf of actorID.
+// Attributes feed ABAC decisions, so users may not change their own unless
+// they are a super admin (ErrForbidden).
 func (g *Guard) SetAttributes(ctx context.Context, actorID, userID string, attrs map[string]any) error {
 	if err := g.authorizeAccountChange(ctx, "attributes", actorID, userID); err != nil {
 		return err
+	}
+	if actorID == userID {
+		super, err := g.Access.IsSuperAdmin(ctx, actorID)
+		if err != nil {
+			return err
+		}
+		if !super {
+			g.record(ctx, audit.Event{ActorID: actorID, Action: "superadmin.denied", Target: userID, Metadata: map[string]any{"op": "attributes", "reason": "self"}})
+			return ErrForbidden
+		}
 	}
 	return g.Identity.SetAttributes(ctx, identitydomain.UserID(userID), attrs)
 }

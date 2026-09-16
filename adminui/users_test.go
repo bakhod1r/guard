@@ -384,3 +384,34 @@ func TestUsersSuperAdminBadgeAndProtection(t *testing.T) {
 	code, _, h = p.post("/guard-admin/users/2/roles", url.Values{"role": {"user"}})
 	usersExpect(t, "admin grants user", code, h, "/users/2", "flash=")
 }
+
+func TestUsersDetailHidesSessionsAndKeysWithoutReadPermission(t *testing.T) {
+	p := usersPanel(t)
+	ctx := context.Background()
+	if _, err := p.g.Access.CreateRole(ctx, "viewer", "Viewer", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.g.Access.CreatePermission(ctx, "user.read", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.g.Access.GrantPermission(ctx, "viewer", "user.read", ""); err != nil {
+		t.Fatal(err)
+	}
+	p.account("3", "viewer@example.com", false)
+	if err := p.g.Access.AssignRole(ctx, "3", "viewer", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := p.g.APIKeys.Issue(ctx, "2", "secret-ci-key", []string{"user.read"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	usersLogin(p, "viewer@example.com")
+	code, body := p.get("/guard-admin/users/2")
+	if code != http.StatusOK || !strings.Contains(body, "user@example.com") {
+		t.Fatalf("viewer: %d", code)
+	}
+	for _, leak := range []string{"<h2>Sessions</h2>", "<h2>API keys</h2>", "secret-ci-key"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("user.read alone disclosed %q", leak)
+		}
+	}
+}

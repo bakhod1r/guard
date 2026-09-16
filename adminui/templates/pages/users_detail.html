@@ -65,7 +65,7 @@
   {{end}}
 </div>
 
-<div class="card scroll">
+{{if $d.CanReadSessions}}<div class="card scroll">
   <div class="bar"><h2>Sessions</h2>
   {{if $d.CanRevokeSessions}}<form method="post" action="{{$path}}/sessions/revoke-all" class="inline" data-confirm="Revoke all sessions of this user?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke all sessions</button></form>{{end}}</div>
   {{if $d.Sessions}}
@@ -74,9 +74,9 @@
     <tbody>{{range $d.Sessions}}<tr><td>{{time .CreatedAt}}</td><td>{{time .LastSeenAt}}</td><td>{{time .ExpiresAt}}</td><td class="mono">{{.IP}}</td><td class="mute">{{.UserAgent}}</td></tr>{{end}}</tbody>
   </table>
   {{else}}<p class="empty">No active sessions.</p>{{end}}
-</div>
+</div>{{end}}
 
-<div class="card scroll">
+{{if $d.CanReadKeys}}<div class="card scroll">
   <div class="bar"><h2>API keys</h2>
   {{if $d.CanRevokeKeys}}<form method="post" action="{{$path}}/api-keys/revoke-all" class="inline" data-confirm="Revoke all API keys of this user?"><input type="hidden" name="_csrf" value="{{$.CSRF}}"><button class="btn sm danger">Revoke all API keys</button></form>{{end}}</div>
   {{if $d.APIKeys}}
@@ -85,5 +85,5 @@
     <tbody>{{range $d.APIKeys}}<tr><td>{{.Name}}</td><td class="mono">{{.Prefix}}</td><td>{{range .Scopes}}<span class="badge">{{.}}</span>{{end}}</td><td>{{time .ExpiresAt}}</td><td>{{time .LastUsedAt}}</td><td>{{if .RevokedAt}}<span class="badge bad">revoked</span>{{else}}<span class="badge ok">active</span>{{end}}</td></tr>{{end}}</tbody>
   </table>
   {{else}}<p class="empty">No API keys.</p>{{end}}
-</div>
+</div>{{end}}
 {{end}}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -81,6 +82,75 @@ func (r *PostgresUsers) Update(ctx context.Context, u *domain.User) error {
 		return domain.ErrUserNotFound
 	}
 	return nil
+}
+
+// lockWindowEnd is last_failed_at + Lockout.Duration ($4, seconds).
+const lockWindowEnd = `last_failed_at + make_interval(secs => $4::float8)`
+
+// ReserveAttempt mirrors domain.User.ReserveAttempt in one statement: the row
+// lock serialises concurrent attempts and the WHERE is re-checked after it.
+func (r *PostgresUsers) ReserveAttempt(ctx context.Context, id domain.UserID, now time.Time, l domain.Lockout) (bool, error) {
+	var n int
+	err := r.db.QueryRow(ctx, `UPDATE guard_account SET
+		failed_attempts = CASE WHEN last_failed_at IS NOT NULL AND failed_attempts >= $3::int AND $2 >= `+lockWindowEnd+`
+			THEN 1 ELSE failed_attempts + 1 END,
+		last_failed_at = $2, updated_at = $2
+		WHERE user_id = $1 AND NOT ($3::int > 0 AND failed_attempts >= $3::int AND last_failed_at IS NOT NULL AND $2 < `+lockWindowEnd+`)
+		RETURNING failed_attempts`,
+		string(id), now, l.MaxAttempts, l.Duration.Seconds()).Scan(&n)
+	if errors.Is(err, pgx.ErrNoRows) || isInvalidText(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func (r *PostgresUsers) RecordLogin(ctx context.Context, id domain.UserID, now time.Time, verifiedHash, newHash string) error {
+	tag, err := r.db.Exec(ctx, `UPDATE guard_account SET secret = $4, failed_attempts = 0, last_failed_at = NULL,
+		last_login_at = $2, updated_at = $2
+		WHERE user_id = $1 AND secret = $3 AND status NOT IN ('banned', 'suspended')`,
+		string(id), now, verifiedHash, newHash)
+	if isInvalidText(err) || (err == nil && tag.RowsAffected() == 0) {
+		return domain.ErrInvalidCredentials
+	}
+	return err
+}
+
+func (r *PostgresUsers) SetSecret(ctx context.Context, id domain.UserID, oldHash, hash string, now time.Time) error {
+	tag, err := r.db.Exec(ctx, `UPDATE guard_account SET secret = $3, failed_attempts = 0, last_failed_at = NULL, updated_at = $4
+		WHERE user_id = $1 AND ($2 = '' OR secret = $2)`, string(id), oldHash, hash, now)
+	if err == nil && tag.RowsAffected() == 0 && oldHash != "" {
+		return domain.ErrInvalidCredentials
+	}
+	return rowsOrNotFound(tag, err)
+}
+
+func (r *PostgresUsers) SetStatus(ctx context.Context, id domain.UserID, status domain.Status, now time.Time) error {
+	tag, err := r.db.Exec(ctx, `UPDATE guard_account SET status = $2, updated_at = $3 WHERE user_id = $1`,
+		string(id), string(status), now)
+	return rowsOrNotFound(tag, err)
+}
+
+func (r *PostgresUsers) SetAttributes(ctx context.Context, id domain.UserID, attrs map[string]any, now time.Time) error {
+	b, err := json.Marshal(attrs)
+	if err != nil {
+		return err
+	}
+	tag, err := r.db.Exec(ctx, `UPDATE guard_account SET attributes = $2, updated_at = $3 WHERE user_id = $1`,
+		string(id), b, now)
+	return rowsOrNotFound(tag, err)
+}
+
+func isInvalidText(err error) bool {
+	pgErr, ok := pgCode(err)
+	return ok && pgErr.Code == pgInvalidTextRepr
+}
+
+// rowsOrNotFound maps a malformed id or an untouched row to ErrUserNotFound.
+func rowsOrNotFound(tag pgconn.CommandTag, err error) error {
+	if isInvalidText(err) || (err == nil && tag.RowsAffected() == 0) {
+		return domain.ErrUserNotFound
+	}
+	return err
 }
 
 const selectAccount = `SELECT user_id::text, email, status, attributes, last_login_at, created_at, updated_at,

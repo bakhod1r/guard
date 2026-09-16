@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -139,5 +140,7 @@ func main() {
 			len(res.Permissions), len(res.Created), len(res.Skipped), len(res.Stale))
 	}
 
-	log.Fatal(r.Run(env("ADDR", ":8080")))
+	srv := &http.Server{Addr: env("ADDR", ":8080"), Handler: r,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute}
+	log.Fatal(srv.ListenAndServe())
 }

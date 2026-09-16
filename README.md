@@ -143,7 +143,7 @@ Rate limiting: `/auth/login` and `/auth/register` are limited per IP (default 10
 
 ## Super admin
 
-`super_admin` is a system wildcard role (migration `00005`). Only a super admin may grant or revoke `admin` or `super_admin`; the last super admin cannot lose the role, be banned or suspended (`409 last_super_admin`). ABAC deny policies still apply to super admins.
+`super_admin` is a system wildcard role (migration `00005`). Only a super admin may grant, revoke or delete a privileged role (`admin`, `super_admin`, any wildcard role, any role holding `role.write`, `role.assign` or `policy.write`), grant or revoke those management permissions, write policies on resource `*`, `role` or `policy`, or change a privileged user's account; the last super admin cannot lose the role, be banned or suspended (`409 last_super_admin`). ABAC deny policies still apply to super admins.
 
 ```go
 _, _ = g.EnsureSuperAdmin(ctx, hostUserID, email, password) // idempotent bootstrap

@@ -122,7 +122,7 @@ func TestLoginErrorMessages(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		login(r, "wrong-password")
 	}
-	if loc := login(r, "tr0ub4dor-guard-42"); !strings.Contains(loc, identitydomain.ErrUserLocked.Error()) {
+	if loc := login(r, "tr0ub4dor-guard-42"); !strings.Contains(loc, "invalid email or password") || strings.Contains(loc, identitydomain.ErrUserLocked.Error()) {
 		t.Fatalf("locked message: %s", loc)
 	}
 

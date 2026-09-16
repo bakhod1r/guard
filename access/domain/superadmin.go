@@ -15,7 +15,7 @@ const (
 )
 
 var (
-	ErrForbidden        = errors.New("access: only a super admin may grant or revoke admin roles or change an admin account")
+	ErrForbidden        = errors.New("access: only a super admin may change privileged roles, management permissions or policies, or the account of a privileged user")
 	ErrLastSuperAdmin   = errors.New("access: the last super admin cannot be removed or blocked")
 	ErrSuperAdminExpiry = errors.New("access: super admin grants cannot expire")
 	// ErrHoldersUnsupported is returned when the role repository cannot
@@ -25,6 +25,44 @@ var (
 
 // IsPrivilegedRole reports whether changing grants of role needs a super admin.
 func IsPrivilegedRole(role string) bool { return role == RoleAdmin || role == RoleSuperAdmin }
+
+// managementPermissions let their holder change who may do what. Granting or
+// revoking them needs a super admin, like the admin role itself.
+var managementPermissions = map[string]bool{"role.write": true, "role.assign": true, "policy.write": true}
+
+// IsManagementPermission reports whether code is a management permission.
+func IsManagementPermission(code string) bool { return managementPermissions[code] }
+
+// Privileged reports whether holding r is equivalent to administration: a
+// built-in admin role, any wildcard role, or a role holding a management
+// permission. Only a super admin grants, revokes or deletes such roles, and
+// only a super admin changes the accounts of their holders.
+func (r Role) Privileged() bool {
+	if IsPrivilegedRole(r.Name) || r.Wildcard {
+		return true
+	}
+	for _, p := range r.Permissions {
+		if IsManagementPermission(p.Code()) {
+			return true
+		}
+	}
+	return false
+}
+
+// Privileged reports whether p can decide management actions (or every
+// action): such a policy can grant admin-equivalent access or lock super
+// admins out, so only a super admin writes or deletes it.
+func (p Policy) Privileged() bool {
+	return p.Resource == "*" || p.Resource == "role" || p.Resource == "policy"
+}
+
+// RequireSuperAdmin refuses a privileged change by an actor without super_admin.
+func RequireSuperAdmin(actorRoles []Role, privileged bool) error {
+	if privileged && !HasSuperAdmin(actorRoles) {
+		return ErrForbidden
+	}
+	return nil
+}
 
 // HasSuperAdmin reports whether roles contains super_admin.
 func HasSuperAdmin(roles []Role) bool {
@@ -39,10 +77,7 @@ func HasSuperAdmin(roles []Role) bool {
 // AuthorizeRoleChange decides whether an actor holding actorRoles may grant
 // or revoke role.
 func AuthorizeRoleChange(actorRoles []Role, role string) error {
-	if IsPrivilegedRole(role) && !HasSuperAdmin(actorRoles) {
-		return ErrForbidden
-	}
-	return nil
+	return RequireSuperAdmin(actorRoles, IsPrivilegedRole(role))
 }
 
 // AuthorizeAccountChange decides whether an actor holding actorRoles may
@@ -54,7 +89,7 @@ func AuthorizeAccountChange(actorRoles, targetRoles []Role, self bool) error {
 		return nil
 	}
 	for _, r := range targetRoles {
-		if IsPrivilegedRole(r.Name) {
+		if r.Privileged() {
 			return ErrForbidden
 		}
 	}

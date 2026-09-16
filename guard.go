@@ -460,7 +460,8 @@ func (g *Guard) CreateAccount(ctx context.Context, userID, email, password strin
 	return u, nil
 }
 
-// ResetPassword sets a new password (admin action) and signs the user out everywhere.
+// ResetPassword sets a new password (admin action), signs the user out
+// everywhere and revokes every API key of the user.
 // Resetting an admin or super admin needs a super admin actor (ErrForbidden).
 func (g *Guard) ResetPassword(ctx context.Context, actorID, userID, password string) error {
 	if err := g.authorizeAccountChange(ctx, "password_reset", actorID, userID); err != nil {
@@ -470,6 +471,11 @@ func (g *Guard) ResetPassword(ctx context.Context, actorID, userID, password str
 		return err
 	}
 	if err := g.Sessions.RevokeAll(ctx, userID); err != nil {
+		return err
+	}
+	// A reset is the response to a compromised account: keys minted by the
+	// intruder must not outlive it.
+	if err := g.APIKeys.RevokeAll(ctx, userID); err != nil {
 		return err
 	}
 	g.record(ctx, audit.Event{ActorID: actorID, Action: "account.password_reset", Target: userID, Success: true})
@@ -494,9 +500,28 @@ func (g *Guard) Login(ctx context.Context, email, password string, meta RequestM
 	if err != nil {
 		return nil, err
 	}
+	if err := g.confirmLogin(ctx, u, s); err != nil {
+		g.record(ctx, audit.Event{ActorID: string(u.ID), Action: "auth.login", Target: string(u.ID), Success: false, IP: meta.IP, UserAgent: meta.UserAgent,
+			Metadata: g.auditEmail(email, map[string]any{"error": err.Error()})})
+		return nil, err
+	}
 	g.record(ctx, audit.Event{ActorID: string(u.ID), Action: "auth.login", Target: string(u.ID), Success: true, IP: meta.IP, UserAgent: meta.UserAgent,
 		Metadata: g.auditEmail(email, map[string]any{})})
 	return &LoginResult{User: u, Session: s, Token: tok}, nil
+}
+
+// confirmLogin re-reads the account after the session exists. A password
+// reset or ban that committed during verification then either shows here or
+// its RevokeAll runs after Start, so the new session never outlives it.
+func (g *Guard) confirmLogin(ctx context.Context, verified *User, s *Session) error {
+	cur, err := g.Identity.User(ctx, verified.ID)
+	if err == nil && (cur.PasswordHash != verified.PasswordHash || cur.CanLogin() != nil) {
+		err = identitydomain.ErrInvalidCredentials
+	}
+	if err != nil {
+		_ = g.Sessions.Revoke(ctx, s.ID)
+	}
+	return err
 }
 
 func (g *Guard) Logout(ctx context.Context, p *Principal, meta RequestMeta) error {

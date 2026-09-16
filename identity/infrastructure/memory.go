@@ -2,9 +2,11 @@ package infrastructure
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bakhod1r/guard/identity/domain"
 )
@@ -40,6 +42,72 @@ func (m *MemoryUsers) Update(_ context.Context, u *domain.User) error {
 	}
 	m.byID[u.ID] = *u
 	return nil
+}
+
+// modify applies fn to the stored account under the write lock.
+func (m *MemoryUsers) modify(id domain.UserID, fn func(u *domain.User) error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.byID[id]
+	if !ok {
+		return domain.ErrUserNotFound
+	}
+	if err := fn(&u); err != nil {
+		return err
+	}
+	m.byID[id] = u
+	return nil
+}
+
+func (m *MemoryUsers) ReserveAttempt(_ context.Context, id domain.UserID, now time.Time, l domain.Lockout) (bool, error) {
+	reserved := false
+	err := m.modify(id, func(u *domain.User) error {
+		reserved = u.ReserveAttempt(now, l)
+		return nil
+	})
+	if errors.Is(err, domain.ErrUserNotFound) {
+		return false, nil
+	}
+	return reserved, err
+}
+
+func (m *MemoryUsers) RecordLogin(_ context.Context, id domain.UserID, now time.Time, verifiedHash, newHash string) error {
+	err := m.modify(id, func(u *domain.User) error {
+		if u.PasswordHash != verifiedHash || u.CanLogin() != nil {
+			return domain.ErrInvalidCredentials
+		}
+		u.RecordLogin(now)
+		u.PasswordHash = newHash
+		return nil
+	})
+	if errors.Is(err, domain.ErrUserNotFound) {
+		return domain.ErrInvalidCredentials
+	}
+	return err
+}
+
+func (m *MemoryUsers) SetSecret(_ context.Context, id domain.UserID, oldHash, hash string, now time.Time) error {
+	return m.modify(id, func(u *domain.User) error {
+		if oldHash != "" && u.PasswordHash != oldHash {
+			return domain.ErrInvalidCredentials
+		}
+		u.PasswordHash, u.FailedAttempts, u.LastFailedAt, u.UpdatedAt = hash, 0, nil, now
+		return nil
+	})
+}
+
+func (m *MemoryUsers) SetStatus(_ context.Context, id domain.UserID, status domain.Status, now time.Time) error {
+	return m.modify(id, func(u *domain.User) error {
+		u.Status, u.UpdatedAt = status, now
+		return nil
+	})
+}
+
+func (m *MemoryUsers) SetAttributes(_ context.Context, id domain.UserID, attrs map[string]any, now time.Time) error {
+	return m.modify(id, func(u *domain.User) error {
+		u.Attributes, u.UpdatedAt = attrs, now
+		return nil
+	})
 }
 
 func (m *MemoryUsers) ByID(_ context.Context, id domain.UserID) (*domain.User, error) {

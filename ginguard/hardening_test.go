@@ -45,6 +45,7 @@ func TestCookieUnsafeRequestsRequireTrustedOrigin(t *testing.T) {
 		{"csrf header wrong value", "/auth/api-keys", map[string]string{"Cookie": cookie, "X-Guard-CSRF": "yes"}, 403},
 		{"bearer exempt", "/auth/api-keys", map[string]string{"Authorization": "Bearer " + e.admin}, 201},
 		{"trusted origin url form", "/t/auth/api-keys", map[string]string{"Cookie": cookie, "Origin": "https://app.example.com"}, 201},
+		{"trusted origin wrong scheme", "/t/auth/api-keys", map[string]string{"Cookie": cookie, "Origin": "http://app.example.com"}, 403},
 		{"trusted origin host form", "/t/auth/api-keys", map[string]string{"Cookie": cookie, "Origin": "https://API.example.com"}, 201},
 		{"own host not implied when list set", "/t/auth/api-keys", map[string]string{"Cookie": cookie, "Origin": "http://example.com"}, 403},
 	}

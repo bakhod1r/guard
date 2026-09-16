@@ -122,6 +122,12 @@ func TestRBACWildcardAndSystem(t *testing.T) {
 	}
 	code, _, h := p.post("/guard-admin/roles/admin/delete", nil)
 	rbacExpect(t, code, h, "/guard-admin/roles/admin?error=")
+	// A plain admin creating a wildcard role would mint admin rights outside super admin control.
+	code, _, h = p.post("/guard-admin/roles", url.Values{"name": {"super"}, "wildcard": {"on"}})
+	rbacExpect(t, code, h, "/guard-admin/roles?error=access%3A+only+a+super+admin")
+	if err := p.g.Access.AssignRole(context.Background(), "1", guard.RoleSuperAdmin, "", nil); err != nil {
+		t.Fatal(err)
+	}
 	code, _, h = p.post("/guard-admin/roles", url.Values{"name": {"super"}, "wildcard": {"on"}})
 	rbacExpect(t, code, h, "/guard-admin/roles/super")
 	if _, body = p.get("/guard-admin/roles/super"); !strings.Contains(body, "wildcard role passes every check") {

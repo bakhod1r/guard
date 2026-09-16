@@ -1,6 +1,7 @@
 package ginguard
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -193,7 +194,7 @@ func (h *handlers) login(c *gin.Context) {
 	}
 	res, err := h.g.Login(c.Request.Context(), in.Email, in.Password, meta(c))
 	if err != nil {
-		fail(c, err)
+		fail(c, loginError(err))
 		return
 	}
 	h.revokeCookieSession(c)
@@ -201,6 +202,16 @@ func (h *handlers) login(c *gin.Context) {
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(h.o.CookieName, string(res.Token), maxAge, "/", h.o.CookieDomain, !h.o.InsecureCookie, true)
 	c.JSON(http.StatusOK, gin.H{"token": res.Token, "expires_at": res.Session.ExpiresAt, "user": toUser(res.User)})
+}
+
+// loginError hides lockout and ban from login responses: both are reported
+// only for existing accounts (ban only with the right password), so exposing
+// them enumerates accounts and confirms passwords. The audit log keeps the cause.
+func loginError(err error) error {
+	if errors.Is(err, identitydomain.ErrUserLocked) || errors.Is(err, identitydomain.ErrUserBlocked) {
+		return identitydomain.ErrInvalidCredentials
+	}
+	return err
 }
 
 // revokeCookieSession ends the session the login request already carried, so
@@ -554,7 +565,7 @@ func (h *handlers) createRole(c *gin.Context) {
 	if !bind(c, &in) {
 		return
 	}
-	role, err := h.g.Access.CreateRole(c.Request.Context(), in.Name, in.Title, in.Description, in.Wildcard)
+	role, err := h.g.Access.CreateRoleAs(c.Request.Context(), string(PrincipalFrom(c).User.ID), in.Name, in.Title, in.Description, in.Wildcard)
 	if err != nil {
 		fail(c, err)
 		return
@@ -573,7 +584,7 @@ func (h *handlers) getRole(c *gin.Context) {
 }
 
 func (h *handlers) deleteRole(c *gin.Context) {
-	if err := h.g.Access.DeleteRole(c.Request.Context(), c.Param("name")); err != nil {
+	if err := h.g.Access.DeleteRoleAs(c.Request.Context(), string(PrincipalFrom(c).User.ID), c.Param("name")); err != nil {
 		fail(c, err)
 		return
 	}
@@ -598,7 +609,7 @@ func (h *handlers) grantPermission(c *gin.Context) {
 }
 
 func (h *handlers) revokePermission(c *gin.Context) {
-	if err := h.g.Access.RevokePermission(c.Request.Context(), c.Param("name"), c.Param("code")); err != nil {
+	if err := h.g.Access.RevokePermissionAs(c.Request.Context(), string(PrincipalFrom(c).User.ID), c.Param("name"), c.Param("code")); err != nil {
 		fail(c, err)
 		return
 	}
@@ -648,7 +659,7 @@ func (h *handlers) createPolicy(c *gin.Context) {
 		return
 	}
 	p.ID = ""
-	if err := h.g.Access.SavePolicy(c.Request.Context(), &p); err != nil {
+	if err := h.g.Access.SavePolicyAs(c.Request.Context(), string(PrincipalFrom(c).User.ID), &p); err != nil {
 		fail(c, err)
 		return
 	}
@@ -676,7 +687,7 @@ func (h *handlers) updatePolicy(c *gin.Context) {
 		return
 	}
 	p.ID = c.Param("id")
-	if err := h.g.Access.SavePolicy(ctx, &p); err != nil {
+	if err := h.g.Access.SavePolicyAs(ctx, string(PrincipalFrom(c).User.ID), &p); err != nil {
 		fail(c, err)
 		return
 	}
@@ -685,7 +696,7 @@ func (h *handlers) updatePolicy(c *gin.Context) {
 }
 
 func (h *handlers) deletePolicy(c *gin.Context) {
-	if err := h.g.Access.DeletePolicy(c.Request.Context(), c.Param("id")); err != nil {
+	if err := h.g.Access.DeletePolicyAs(c.Request.Context(), string(PrincipalFrom(c).User.ID), c.Param("id")); err != nil {
 		fail(c, err)
 		return
 	}

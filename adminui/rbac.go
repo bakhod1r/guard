@@ -43,7 +43,7 @@ func (a *app) rolesList(c *gin.Context) {
 }
 
 func (a *app) roleCreate(c *gin.Context) {
-	role, err := a.g.Access.CreateRole(c.Request.Context(), c.PostForm("name"), c.PostForm("title"),
+	role, err := a.g.Access.CreateRoleAs(c.Request.Context(), a.actor(c), c.PostForm("name"), c.PostForm("title"),
 		c.PostForm("description"), c.PostForm("wildcard") != "")
 	if err != nil {
 		a.fail(c, "/roles", err)
@@ -88,7 +88,7 @@ func (a *app) roleDetail(c *gin.Context) {
 
 func (a *app) roleDelete(c *gin.Context) {
 	name := c.Param("name")
-	if err := a.g.Access.DeleteRole(c.Request.Context(), name); err != nil {
+	if err := a.g.Access.DeleteRoleAs(c.Request.Context(), a.actor(c), name); err != nil {
 		back := "/roles"
 		if errors.Is(err, accessdomain.ErrSystemRole) {
 			back = rbacRolePath(name)
@@ -112,7 +112,7 @@ func (a *app) roleGrant(c *gin.Context) {
 
 func (a *app) roleRevoke(c *gin.Context) {
 	name, code := c.Param("name"), c.PostForm("code")
-	if err := a.g.Access.RevokePermission(c.Request.Context(), name, code); err != nil {
+	if err := a.g.Access.RevokePermissionAs(c.Request.Context(), a.actor(c), name, code); err != nil {
 		a.fail(c, rbacRolePath(name), err)
 		return
 	}

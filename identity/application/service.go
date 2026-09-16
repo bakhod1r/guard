@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bakhod1r/guard/identity/domain"
@@ -15,6 +16,9 @@ type Service struct {
 	hasher  domain.PasswordHasher
 	lockout domain.Lockout
 	now     func() time.Time
+
+	dummyOnce sync.Once
+	dummyHash string
 }
 
 func NewService(users domain.UserRepository, hasher domain.PasswordHasher, lockout domain.Lockout) *Service {
@@ -70,20 +74,39 @@ func (s *Service) SetPassword(ctx context.Context, id domain.UserID, newPassword
 	if err := domain.ValidatePasswordFor(string(u.Email), newPassword); err != nil {
 		return err
 	}
-	if u.PasswordHash, err = s.hasher.Hash(newPassword); err != nil {
+	hash, err := s.hasher.Hash(newPassword)
+	if err != nil {
 		return err
 	}
-	u.FailedAttempts = 0
-	u.LastFailedAt = nil
-	u.UpdatedAt = s.now().UTC()
+	now := s.now().UTC()
+	if w, ok := s.users.(domain.AccountWriter); ok {
+		return w.SetSecret(ctx, id, "", hash, now)
+	}
+	u.PasswordHash, u.FailedAttempts, u.LastFailedAt, u.UpdatedAt = hash, 0, nil, now
 	return s.users.Update(ctx, u)
 }
 
-// dummyHash equalizes timing when the email does not exist.
+// dummyHash equalizes timing when the email does not exist. It is only a
+// fallback: Service hashes a dummy with its own hasher so the cost matches
+// real accounts even with custom parameters.
 const dummyHash = "$argon2id$v=19$m=65536,t=3,p=2$c29tZXNhbHRzb21lc2FsdA$Zm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFyZm9vYmFy"
 
+// dummy returns a hash produced by s.hasher (computed once).
+func (s *Service) dummy() string {
+	s.dummyOnce.Do(func() {
+		s.dummyHash = dummyHash
+		if h, err := s.hasher.Hash("guard-dummy-password"); err == nil {
+			s.dummyHash = h
+		}
+	})
+	return s.dummyHash
+}
+
 // Authenticate verifies credentials. Unknown email and wrong password
-// return the same error to avoid account enumeration.
+// return the same error to avoid account enumeration. With a
+// domain.AccountWriter repository every write is column-level and atomic:
+// attempts are counted before the password check, and a login never
+// restores a hash or status changed while it was in flight.
 func (s *Service) Authenticate(ctx context.Context, rawEmail, password string) (*domain.User, error) {
 	email, err := domain.NewEmail(rawEmail)
 	if err != nil {
@@ -91,16 +114,25 @@ func (s *Service) Authenticate(ctx context.Context, rawEmail, password string) (
 	}
 	u, err := s.users.ByEmail(ctx, email)
 	if errors.Is(err, domain.ErrUserNotFound) {
-		_, _ = s.hasher.Verify(password, dummyHash)
+		_, _ = s.hasher.Verify(password, s.dummy())
 		return nil, domain.ErrInvalidCredentials
 	}
 	if err != nil {
 		return nil, err
 	}
 	now := s.now().UTC()
-	if u.Locked(now, s.lockout) {
+	w, atomic := s.users.(domain.AccountWriter)
+	locked := u.Locked(now, s.lockout)
+	if !locked && atomic {
+		reserved, err := w.ReserveAttempt(ctx, u.ID, now, s.lockout)
+		if err != nil {
+			return nil, err
+		}
+		locked = !reserved
+	}
+	if locked {
 		// Same hashing cost as a real attempt so lock state is not observable by timing.
-		_, _ = s.hasher.Verify(password, dummyHash)
+		_, _ = s.hasher.Verify(password, s.dummy())
 		return nil, domain.ErrUserLocked
 	}
 	ok, err := s.hasher.Verify(password, u.PasswordHash)
@@ -108,18 +140,26 @@ func (s *Service) Authenticate(ctx context.Context, rawEmail, password string) (
 		return nil, err
 	}
 	if !ok {
-		u.RecordFailedLogin(now, s.lockout)
-		if err := s.users.Update(ctx, u); err != nil {
-			return nil, err
+		if !atomic {
+			u.RecordFailedLogin(now, s.lockout)
+			if err := s.users.Update(ctx, u); err != nil {
+				return nil, err
+			}
 		}
 		return nil, domain.ErrInvalidCredentials
 	}
 	if err := u.CanLogin(); err != nil {
 		return nil, err
 	}
+	verified := u.PasswordHash
 	u.RecordLogin(now)
 	s.rehash(u, password)
-	if err := s.users.Update(ctx, u); err != nil {
+	if atomic {
+		err = w.RecordLogin(ctx, u.ID, now, verified, u.PasswordHash)
+	} else {
+		err = s.users.Update(ctx, u)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return u, nil
@@ -152,10 +192,16 @@ func (s *Service) ChangePassword(ctx context.Context, id domain.UserID, oldPassw
 	if err := domain.ValidatePasswordFor(string(u.Email), newPassword); err != nil {
 		return err
 	}
-	if u.PasswordHash, err = s.hasher.Hash(newPassword); err != nil {
+	hash, err := s.hasher.Hash(newPassword)
+	if err != nil {
 		return err
 	}
-	u.UpdatedAt = s.now().UTC()
+	now := s.now().UTC()
+	if w, ok := s.users.(domain.AccountWriter); ok {
+		// Conditional on the verified hash: a concurrent admin reset wins.
+		return w.SetSecret(ctx, id, u.PasswordHash, hash, now)
+	}
+	u.PasswordHash, u.UpdatedAt = hash, now
 	return s.users.Update(ctx, u)
 }
 
@@ -176,8 +222,11 @@ func (s *Service) SetStatus(ctx context.Context, id domain.UserID, status domain
 	if err != nil {
 		return err
 	}
-	u.Status = status
-	u.UpdatedAt = s.now().UTC()
+	now := s.now().UTC()
+	if w, ok := s.users.(domain.AccountWriter); ok {
+		return w.SetStatus(ctx, id, status, now)
+	}
+	u.Status, u.UpdatedAt = status, now
 	return s.users.Update(ctx, u)
 }
 
@@ -189,8 +238,11 @@ func (s *Service) SetAttributes(ctx context.Context, id domain.UserID, attrs map
 	if attrs == nil {
 		attrs = map[string]any{}
 	}
-	u.Attributes = attrs
-	u.UpdatedAt = s.now().UTC()
+	now := s.now().UTC()
+	if w, ok := s.users.(domain.AccountWriter); ok {
+		return w.SetAttributes(ctx, id, attrs, now)
+	}
+	u.Attributes, u.UpdatedAt = attrs, now
 	return s.users.Update(ctx, u)
 }
 

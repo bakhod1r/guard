@@ -360,10 +360,10 @@ func (a *app) login(c *gin.Context) {
 	res, err := a.g.Login(c.Request.Context(), c.PostForm("email"), c.PostForm("password"),
 		guard.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()})
 	if err != nil {
+		// Lockout and ban are not revealed: they would enumerate accounts
+		// and confirm passwords. The audit log records the real cause.
 		msg := "invalid email or password"
-		if errors.Is(err, identitydomain.ErrUserLocked) || errors.Is(err, identitydomain.ErrUserBlocked) {
-			msg = err.Error()
-		} else if !isDomainError(err) {
+		if !isDomainError(err) {
 			a.logError(c, err)
 			msg = "internal error"
 		}

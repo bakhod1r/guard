@@ -183,7 +183,7 @@ func (a *app) policySave(c *gin.Context, id, action string) {
 		Priority: strings.TrimSpace(c.PostForm("priority")), Root: c.PostForm("root"), Enabled: c.PostForm("enabled") != ""}
 	p, err := parsePolicy(f)
 	if err == nil {
-		err = a.g.Access.SavePolicy(c.Request.Context(), p)
+		err = a.g.Access.SavePolicyAs(c.Request.Context(), a.actor(c), p)
 	}
 	if err != nil {
 		if !isDomainError(err) {
@@ -230,7 +230,7 @@ func (a *app) policyUpdate(c *gin.Context) {
 
 func (a *app) policyDelete(c *gin.Context) {
 	id := c.Param("id")
-	if err := a.g.Access.DeletePolicy(c.Request.Context(), id); err != nil {
+	if err := a.g.Access.DeletePolicyAs(c.Request.Context(), a.actor(c), id); err != nil {
 		a.fail(c, "/policies", err)
 		return
 	}
@@ -243,7 +243,7 @@ func (a *app) policyToggle(c *gin.Context) {
 	p, err := a.g.Access.Policy(ctx, c.Param("id"))
 	if err == nil {
 		p.Enabled = !p.Enabled
-		err = a.g.Access.SavePolicy(ctx, p)
+		err = a.g.Access.SavePolicyAs(ctx, a.actor(c), p)
 	}
 	if err != nil {
 		a.fail(c, "/policies", err)

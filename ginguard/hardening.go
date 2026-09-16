@@ -105,17 +105,20 @@ func csrfOK(c *gin.Context, o Options) bool {
 		return strings.EqualFold(u.Host, c.Request.Host)
 	}
 	for _, t := range o.TrustedOrigins {
-		if strings.EqualFold(u.Host, originHost(t)) {
+		scheme, host := originParts(t)
+		if strings.EqualFold(u.Host, host) && (scheme == "" || strings.EqualFold(u.Scheme, scheme)) {
 			return true
 		}
 	}
 	return false
 }
 
-// originHost accepts "https://app.example.com" or "app.example.com".
-func originHost(s string) string {
+// originParts accepts "https://app.example.com" (scheme enforced, so a
+// plain-HTTP origin on the same host is not trusted) or "app.example.com"
+// (any scheme).
+func originParts(s string) (scheme, host string) {
 	if u, err := url.Parse(s); err == nil && u.Host != "" {
-		return u.Host
+		return u.Scheme, u.Host
 	}
-	return s
+	return "", s
 }
