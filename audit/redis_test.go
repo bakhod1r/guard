@@ -22,6 +22,15 @@ func newBuffer(t *testing.T, next Log, cfg RedisBufferConfig) (*RedisBuffer, *mi
 	return NewRedisBuffer(rdb, next, cfg), mr
 }
 
+func TestRedisBufferDefaults(t *testing.T) {
+	b, _ := newBuffer(t, &batchMemory{}, RedisBufferConfig{})
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+	if b.cfg.Prefix != "guard:" || b.cfg.BatchSize != defaultBufferBatch ||
+		b.cfg.Interval != defaultBufferInterval || b.cfg.Logger == nil {
+		t.Fatalf("defaults: %+v", b.cfg)
+	}
+}
+
 func TestRedisBufferQueuesThenFlushesInBatches(t *testing.T) {
 	ctx := context.Background()
 	mem := &batchMemory{}
@@ -280,12 +289,28 @@ func TestRedisBufferConcurrentFlushersWriteOnce(t *testing.T) {
 }
 
 func TestRedisBufferCloseTimeoutThenRetry(t *testing.T) {
-	mem := &batchMemory{}
-	b, _ := newBuffer(t, mem, RedisBufferConfig{})
+	// Hold the flusher inside a write so it cannot reach done: Close then has
+	// only the cancelled context to select on, which is what this asserts.
+	// Racing the flusher's exit instead would make the branch coverage a
+	// coin toss.
+	started, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	mem := &batchMemory{onBatch: func() {
+		once.Do(func() {
+			close(started)
+			<-release
+		})
+	}}
+	b, _ := newBuffer(t, mem, RedisBufferConfig{Interval: 5 * time.Millisecond})
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
 	_ = b.Record(context.Background(), Event{Action: "a"})
-	_ = b.Close(cancelled) // may or may not beat the flusher exit
+	<-started
+
+	if err := b.Close(cancelled); !errors.Is(err, context.Canceled) {
+		t.Fatalf("close with a cancelled context = %v", err)
+	}
+	close(release)
 	if err := b.Close(context.Background()); err != nil || mem.count() != 1 {
 		t.Fatalf("retry close = %v, written %d", err, mem.count())
 	}
