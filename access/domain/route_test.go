@@ -14,6 +14,9 @@ func TestRoutePermission(t *testing.T) {
 		{"PATCH", "/api/reports/:id", "/api", "reports.update"},
 		{"DELETE", "/api/reports/:id", "/api", "reports.delete"},
 		{"get", "/api/v1/Invoice-Items/:id/lines/*rest", "/api", "v1_invoice-items_lines.read"},
+		// net/http route patterns use "{id}" and "{rest...}" wildcards.
+		{"GET", "/api/reports/{id}", "/api", "reports.read"},
+		{"POST", "/api/v1/invoices/{id}/lines/{rest...}", "/api", "v1_invoices_lines.create"},
 		{"HEAD", "/health", "", "health.read"},
 		{"OPTIONS", "/health", "", "health.options"},
 		{"GET", "/a b.c", "", "a_b_c.read"},
@@ -27,7 +30,7 @@ func TestRoutePermission(t *testing.T) {
 }
 
 func TestRoutePermissionRejectsRoutesWithoutResource(t *testing.T) {
-	for _, path := range []string{"/", "/api", "/api/:id", ""} {
+	for _, path := range []string{"/", "/api", "/api/:id", "/api/{id}", ""} {
 		if _, err := RoutePermission("GET", path, "/api"); err != ErrInvalidPermission {
 			t.Errorf("%q: %v", path, err)
 		}

@@ -1,0 +1,11 @@
+go 1.26.0
+
+use (
+	.
+	./adapters/beego
+	./adapters/echo
+	./adapters/fiber
+	./adapters/hertz
+	./adapters/iris
+	./adapters/nethttp
+)

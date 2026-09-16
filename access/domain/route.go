@@ -23,7 +23,9 @@ func RoutePermission(method, path, prefix string) (Permission, error) {
 	}
 	var parts []string
 	for _, seg := range strings.Split(path, "/") {
-		if seg == "" || seg[0] == ':' || seg[0] == '*' {
+		// Wildcards carry no meaning for the resource: ":id" (gin, echo, chi,
+		// httprouter), "*rest" and net/http's "{id}" / "{rest...}".
+		if seg == "" || seg[0] == ':' || seg[0] == '*' || seg[0] == '{' {
 			continue
 		}
 		parts = append(parts, sanitizePart(seg))

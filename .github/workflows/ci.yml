@@ -43,6 +43,24 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
+  adapters:
+    name: framework adapters
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        adapter: [nethttp, echo, fiber, iris, hertz, beego]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Adapters are separate modules resolved through go.work, so they build
+      # against this commit rather than the last published tag.
+      - name: test
+        run: go test -count=1 ./adapters/${{ matrix.adapter }}/
+
   test:
     name: test (postgres ${{ matrix.postgres }})
     runs-on: ubuntu-24.04

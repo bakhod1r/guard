@@ -7,10 +7,16 @@ PKGS = $$(go list ./... | grep -v /examples/)
 export GUARD_TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:18432/guard?sslmode=disable
 export GUARD_TEST_REDIS_ADDR ?= localhost:18379
 
-.PHONY: test test-integration cover lint vuln example example-down
+ADAPTERS = nethttp echo fiber iris hertz beego
+
+.PHONY: test test-adapters test-integration cover lint vuln example example-down
 
 test: ## unit tests (integration tests skip without GUARD_TEST_* services)
 	go test -count=1 $(PKGS)
+	$(MAKE) test-adapters
+
+test-adapters: ## framework adapter modules (separate go modules, run via go.work)
+	@for m in $(ADAPTERS); do echo "== adapters/$$m"; go test -count=1 ./adapters/$$m/ || exit 1; done
 
 test-integration: ## start postgres+redis via compose, run race tests
 	$(COMPOSE) up -d --wait postgres redis
