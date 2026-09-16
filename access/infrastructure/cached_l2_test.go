@@ -205,6 +205,58 @@ func TestL2UnserializableValueIsNotStored(t *testing.T) {
 	}
 }
 
+// Without a provable version there is no key namespace to read from: the origin
+// answers and nothing is cached at either level.
+func TestL2WithoutVersionUsesOrigin(t *testing.T) {
+	rdb, mr := l2Redis(t)
+	o := newOrigin(t)
+	c := NewCached(o, o, rdb, CacheOptions{L2: true, TTL: time.Hour})
+	ctx := context.Background()
+	mr.Close()
+
+	if _, ok := c.l2Token(ctx); ok {
+		t.Fatal("token proven while Redis is down")
+	}
+	if g, err := c.GrantsOf(ctx, "u1"); err != nil || len(g) != 1 {
+		t.Fatalf("grants %v %v", g, err)
+	}
+	if s := c.Stats(); s.Bypasses != 1 || s.L2Hits != 0 || s.L2Misses != 0 {
+		t.Fatalf("stats %+v", s)
+	}
+}
+
+func TestL2OriginErrorIsNotStored(t *testing.T) {
+	rdb, _ := l2Redis(t)
+	o := newOrigin(t)
+	boom := errors.New("boom")
+	o.failLoad = boom
+	c := NewCached(o, o, rdb, CacheOptions{L2: true, TTL: time.Hour})
+	ctx := context.Background()
+	if _, err := c.GrantsOf(ctx, "u1"); !errors.Is(err, boom) {
+		t.Fatalf("err %v", err)
+	}
+	token, ok := c.l2Token(ctx)
+	if !ok {
+		t.Fatal("no token")
+	}
+	if n, err := rdb.Exists(ctx, c.l2Key(token, l2Grants, "u1")).Result(); err != nil || n != 0 {
+		t.Fatalf("failed load was cached: %d %v", n, err)
+	}
+}
+
+// A load can outlive the invalidation that distrusted L2, so the write side
+// checks the window too rather than relying on the read side's earlier check.
+func TestL2StoreSkippedWhileDistrusted(t *testing.T) {
+	rdb, _ := l2Redis(t)
+	c := NewCached(NewMemory(), NewMemory(), rdb, CacheOptions{L2: true, TTL: time.Hour})
+	ctx := context.Background()
+	c.l2DistrustUntil.Store(c.now().Add(time.Hour).UnixNano())
+	c.storeL2(ctx, c.l2Key("t", l2Grants, "u1"), []int{1})
+	if n, err := rdb.Exists(ctx, c.l2Key("t", l2Grants, "u1")).Result(); err != nil || n != 0 {
+		t.Fatalf("wrote to a distrusted L2: %d %v", n, err)
+	}
+}
+
 // A failed invalidation means the shared version may not have moved: this
 // instance must stop trusting L2 for a full L2 TTL rather than re-reading a
 // value that its own write just made stale.
