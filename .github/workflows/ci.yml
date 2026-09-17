@@ -68,6 +68,15 @@ jobs:
       # against this commit rather than the last published tag.
       - name: test
         run: go test -count=1 ./adapters/${{ matrix.adapter }}/
+      # Each adapter pulls in a whole web framework of its own, and the static
+      # checks job scans only the root module, so without this their dependency
+      # trees are never checked. GOWORK=off keeps the scan on the module's own
+      # resolved versions, the ones a user installing it would get.
+      - name: govulncheck
+        working-directory: adapters/${{ matrix.adapter }}
+        run: |
+          toolchain=$(awk '/^toolchain /{print $2}' ../../go.mod)
+          GOWORK=off GOTOOLCHAIN=$toolchain go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
 
   test:
     name: test (postgres ${{ matrix.postgres }})
