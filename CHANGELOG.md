@@ -4,6 +4,10 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [adapters v0.2.1] - 2026-09-17
+
+Adapter modules only; the root module stays at v0.2.0, which these still require.
+
 ### Security
 - `adapters/fiber` required a Fiber release affected by GO-2026-4543 (denial of service through route parameter overflow), reachable from the adapter's own code. Fiber is now `v2.52.14`. Other adapter dependencies with advisories were raised at the same time: chi `v5.2.4` (`adapters/nethttp`), echo `v4.15.3`, phonenumbers `v1.2.2` (`adapters/hertz`), logrus `v1.8.3` and gomarkdown `v0.0.0-20260916113448` (`adapters/iris`, both indirect and not reachable from the adapter).
 - CI runs govulncheck against every adapter module. Only the root module was scanned before, so a framework's own dependency tree could carry a known vulnerability without failing a build.
