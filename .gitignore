@@ -1,1 +1,10 @@
 /gin
+
+# docs site build
+/site/
+.cache/
+
+.venv-docs/
+
+# test artefacts
+coverage.out

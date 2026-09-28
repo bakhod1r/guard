@@ -9,7 +9,7 @@ export GUARD_TEST_REDIS_ADDR ?= localhost:18379
 
 ADAPTERS = nethttp echo fiber iris hertz beego
 
-.PHONY: test test-adapters test-integration cover lint vuln example example-down
+.PHONY: test test-adapters test-integration cover lint vuln example example-down docs-install docs-serve docs-build
 
 test: ## unit tests (integration tests skip without GUARD_TEST_* services)
 	go test -count=1 $(PKGS)
@@ -37,3 +37,13 @@ example: ## full stack on :18080
 
 example-down:
 	$(COMPOSE) down -v
+
+docs-install: ## install the documentation toolchain into .venv-docs
+	python3 -m venv .venv-docs
+	.venv-docs/bin/pip install -q -r requirements-docs.txt
+
+docs-serve: ## live-preview the documentation site on :8000
+	.venv-docs/bin/mkdocs serve
+
+docs-build: ## build the documentation site into ./site (fails on broken links)
+	.venv-docs/bin/mkdocs build --strict

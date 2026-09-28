@@ -63,9 +63,9 @@ Guards: **public** — none; **auth** — session or API key; **session** — se
 
 ## Host routes (`Protect` / `Autoseed`)
 
-`ginguard.Protect(g, opts, prefix)` on a host group requires the permission derived from the matched route (`GET /api/reports/:id` → `reports.read`; `403` when denied, same error body as below). `ginguard.Autoseed` creates those permissions at startup and grants them only to the super role; grant others via `POST /guard/roles/:name/permissions`. Derivation rules: [configuration.md](configuration.md#route-permissions-protect--autoseed).
+`ginguard.Protect(g, opts, prefix)` on a host group requires the permission derived from the matched route (`GET /api/reports/:id` → `reports.read`; `403` when denied, same error body as below). `ginguard.Autoseed` creates those permissions at startup and grants them only to the super role; grant others via `POST /guard/roles/:name/permissions`. Derivation rules: [configuration.md](configuration.md#route-permissions-protect-autoseed).
 
-`ginguard.SyncRoutes` / `ProtectRoutes` add a route registry, `SyncOptions.Overrides` (`"METHOD /full/path"` → `resource.action`) and grant `admin`/`super_admin` all and `user` the `UserActions` (default `read`); see [README](../README.md#route-auto-discovery).
+`ginguard.SyncRoutes` / `ProtectRoutes` add a route registry, `SyncOptions.Overrides` (`"METHOD /full/path"` → `resource.action`) and grant `admin`/`super_admin` all and `user` the `UserActions` (default `read`); see [Quick start](quick-start.md#route-auto-discovery).
 
 ## Errors
 

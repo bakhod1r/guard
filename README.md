@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://bakhod1r.github.io/guard/">Docs</a> ·
   <a href="#installation">Install</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#core-components">Components</a> ·
@@ -223,7 +224,7 @@ CI (`.github/workflows/ci.yml`) runs the same gates on PostgreSQL 13 and 17.
 By default audit events are written to PostgreSQL synchronously (or in-process with `AsyncAudit`). For high write volume, queue them in Redis and batch-insert:
 
 ```go
-g, err := guard.New(ctx, guard.Config{
+g, err := guard.New(guard.Config{
     // ...
     AuditBuffer: guard.AuditBuffer{
         Enabled:   true,
@@ -255,6 +256,8 @@ Full list with rationale: [docs/production.md](docs/production.md). Minimum befo
 - Audit retention job, backups with rehearsed restore, key/secret rotation.
 - Logs redact `Authorization`, `X-API-Key`, cookies and credential request bodies.
 - Admin panel behind VPN / IP allowlist.
+
+Full documentation site: **https://bakhod1r.github.io/guard/**
 
 Also: [configuration](docs/configuration.md) · [architecture](docs/architecture.md) · [HTTP API and error codes](docs/api.md) · [admin panel](docs/admin-panel.md) · [security policy](SECURITY.md) · [changelog](CHANGELOG.md).
 
