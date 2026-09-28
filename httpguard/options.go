@@ -15,6 +15,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -74,8 +75,18 @@ type Options struct {
 	ClientIP func(r *http.Request) string
 	// TrustForwardedFor makes the default ClientIP read the left-most
 	// X-Forwarded-For entry. Only enable behind a proxy that overwrites the
-	// header on every request.
+	// header on every request: behind one that appends (nginx
+	// $proxy_add_x_forwarded_for, AWS ALB) the client picks the left-most
+	// entry itself and can rotate it to escape the auth rate limit. Prefer
+	// TrustedProxies. A left-most entry that is not an IP is ignored.
 	TrustForwardedFor bool
+	// TrustedProxies lists the proxies in front of the service. When set, the
+	// default ClientIP honours X-Forwarded-For only if the direct peer is one
+	// of them, and walks the header right to left, returning the first hop
+	// that is not a trusted proxy. Entries a client added itself sit to the
+	// left of that hop and are never used. Takes priority over
+	// TrustForwardedFor.
+	TrustedProxies []netip.Prefix
 }
 
 func (o Options) withDefaults() Options {
@@ -104,8 +115,12 @@ func (o Options) withDefaults() Options {
 		o.RoutePattern = defaultRoutePattern
 	}
 	if o.ClientIP == nil {
-		trust := o.TrustForwardedFor
-		o.ClientIP = func(r *http.Request) string { return clientIP(r, trust) }
+		if proxies := o.TrustedProxies; len(proxies) > 0 {
+			o.ClientIP = func(r *http.Request) string { return clientIPVia(r, proxies) }
+		} else {
+			trust := o.TrustForwardedFor
+			o.ClientIP = func(r *http.Request) string { return clientIP(r, trust) }
+		}
 	}
 	return o
 }
@@ -135,15 +150,64 @@ func clientIP(r *http.Request, trustForwarded bool) string {
 	if trustForwarded {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 			first, _, _ := strings.Cut(xff, ",")
-			if ip := strings.TrimSpace(first); ip != "" {
-				return ip
+			// Only an address is accepted: the value becomes a rate-limit key,
+			// and free text there would let a client name any key it likes.
+			if ip, err := netip.ParseAddr(strings.TrimSpace(first)); err == nil {
+				return ip.Unmap().String()
 			}
 		}
 	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
+	return peerIP(r)
+}
+
+// clientIPVia resolves the client behind a chain of trusted proxies.
+func clientIPVia(r *http.Request, proxies []netip.Prefix) string {
+	peer := peerIP(r)
+	addr, err := netip.ParseAddr(peer)
+	if err != nil || !trusted(addr.Unmap(), proxies) {
+		return peer
 	}
-	return r.RemoteAddr
+	// Several X-Forwarded-For lines form one list, in order.
+	var hops []string
+	for _, line := range r.Header.Values("X-Forwarded-For") {
+		hops = append(hops, strings.Split(line, ",")...)
+	}
+	client := peer
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop, err := netip.ParseAddr(strings.TrimSpace(hops[i]))
+		if err != nil {
+			// Whoever wrote this entry is not a proxy we trust; stop at the
+			// last hop we could vouch for.
+			return client
+		}
+		client = hop.Unmap().String()
+		if !trusted(hop.Unmap(), proxies) {
+			return client
+		}
+	}
+	return client
+}
+
+func trusted(a netip.Addr, proxies []netip.Prefix) bool {
+	for _, p := range proxies {
+		if p.Contains(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// peerIP is RemoteAddr without the port, with an IPv4-mapped IPv6 address
+// written as plain IPv4.
+func peerIP(r *http.Request) string {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	if a, err := netip.ParseAddr(host); err == nil {
+		return a.Unmap().String()
+	}
+	return host
 }
 
 type ctxKey int

@@ -135,9 +135,16 @@ internal Gin engine; nothing of Gin reaches your router.
 
 ## Client IP behind a proxy
 
-`httpguard` reads `RemoteAddr` by default. Behind a proxy you control, set
-`Options.TrustForwardedFor = true` (left-most `X-Forwarded-For` entry) or supply
-`Options.ClientIP`. The Echo, Fiber, Iris, Hertz and Beego adapters use the
+`httpguard` reads `RemoteAddr` by default. Behind a proxy, list it in
+`Options.TrustedProxies` (for example
+`[]netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}`): the header is honoured
+only when the direct peer is one of them, and it is read right to left, so
+entries a client added itself are skipped. `Options.TrustForwardedFor = true`
+(left-most entry) is safe only behind a proxy that overwrites the header; behind
+one that appends (nginx `$proxy_add_x_forwarded_for`, AWS ALB) a client can
+rotate the left-most entry and escape the auth rate limit. You can also supply
+`Options.ClientIP`. With `ginguard` and `adminui`, call
+`engine.SetTrustedProxies` — Gin trusts every proxy by default. The Echo, Fiber, Iris, Hertz and Beego adapters use the
 framework's own resolver instead.
 
 ## Working on the adapters
