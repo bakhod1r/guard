@@ -3,6 +3,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,7 +35,7 @@ func (s *Service) Resolve(ctx context.Context, tok domain.Token) (*domain.Key, e
 		return nil, domain.ErrKeyInvalid
 	}
 	k, err := s.repo.ByHash(ctx, tok.Hash())
-	if err == domain.ErrKeyNotFound {
+	if errors.Is(err, domain.ErrKeyNotFound) {
 		return nil, domain.ErrKeyInvalid
 	}
 	if err != nil {

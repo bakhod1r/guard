@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -101,5 +102,21 @@ func TestResolvePaths(t *testing.T) {
 	repo.byHashErr = errBoom
 	if _, err := svc.Resolve(ctx, tok); !errors.Is(err, errBoom) {
 		t.Errorf("repo error: %v", err)
+	}
+}
+
+// A repository that wraps its not-found error (as a SQL adapter adding context
+// would) must still produce ErrKeyInvalid — a 401, not a 500.
+func TestResolveWrappedNotFound(t *testing.T) {
+	now := time.Now()
+	svc, repo := newSvc(&now)
+	ctx := context.Background()
+	_, tok, err := svc.Issue(ctx, "u", "ci", []string{"*"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo.byHashErr = fmt.Errorf("postgres: %w", domain.ErrKeyNotFound)
+	if _, err := svc.Resolve(ctx, tok); !errors.Is(err, domain.ErrKeyInvalid) {
+		t.Fatalf("Resolve = %v, want ErrKeyInvalid", err)
 	}
 }
