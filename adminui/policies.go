@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -81,7 +82,13 @@ type policyFormData struct {
 	Error                                              string
 	Fields, Operators                                  []string
 	Example                                            string
+	// Roles is the bound role set; AllRoles feeds the multi-select.
+	Roles    []string
+	AllRoles []string
 }
+
+// HasRole reports whether name is selected in the form.
+func (f policyFormData) HasRole(name string) bool { return slices.Contains(f.Roles, name) }
 
 const policyExample = `{
   "operator": "and",
@@ -125,6 +132,14 @@ func (a *app) renderPolicyForm(c *gin.Context, status int, f policyFormData) {
 	f.Fields = []string{"user.<attr> / subject.<attr> (id, roles, email, status, custom)", "resource.<attr> (id, type, custom)", "env.<key> (now, ip, custom)"}
 	f.Operators = []string{"eq", "ne", "gt", "lt", "gte", "lte", "in", "not_in", "contains"}
 	f.Example = policyExample
+	roles, err := a.g.Access.ListRoles(c.Request.Context())
+	if err != nil {
+		a.internalError(c, err)
+		return
+	}
+	for _, r := range roles {
+		f.AllRoles = append(f.AllRoles, r.Name)
+	}
 	title := "New policy"
 	if f.ID != "" {
 		title = "Edit policy"
@@ -161,7 +176,7 @@ func (a *app) policyEdit(c *gin.Context) {
 		root = string(b)
 	}
 	a.renderPolicyForm(c, http.StatusOK, policyFormData{ID: p.ID, Name: p.Name, Resource: p.Resource, Action: p.Action,
-		Effect: string(p.Effect), Priority: strconv.Itoa(p.Priority), Enabled: p.Enabled, Root: root})
+		Effect: string(p.Effect), Priority: strconv.Itoa(p.Priority), Enabled: p.Enabled, Root: root, Roles: p.Roles})
 }
 
 // decodeStrict decodes a single JSON value rejecting unknown fields and trailing data.
@@ -180,7 +195,8 @@ func decodeStrict(raw string, v any) error {
 func (a *app) policySave(c *gin.Context, id, action string) {
 	f := policyFormData{ID: id, Name: c.PostForm("name"), Resource: strings.TrimSpace(c.PostForm("resource")),
 		Action: strings.TrimSpace(c.PostForm("action")), Effect: c.PostForm("effect"),
-		Priority: strings.TrimSpace(c.PostForm("priority")), Root: c.PostForm("root"), Enabled: c.PostForm("enabled") != ""}
+		Priority: strings.TrimSpace(c.PostForm("priority")), Root: c.PostForm("root"), Enabled: c.PostForm("enabled") != "",
+		Roles: c.PostFormArray("roles")}
 	p, err := parsePolicy(f)
 	if err == nil {
 		err = a.g.Access.SavePolicyAs(c.Request.Context(), a.actor(c), p)
@@ -194,7 +210,7 @@ func (a *app) policySave(c *gin.Context, id, action string) {
 		a.renderPolicyForm(c, http.StatusUnprocessableEntity, f)
 		return
 	}
-	a.audit(c, action, p.ID, map[string]any{"name": p.Name})
+	a.audit(c, action, p.ID, map[string]any{"name": p.Name, "roles": p.Roles})
 	a.redirect(c, "/policies", "Policy saved")
 }
 
@@ -208,7 +224,7 @@ func parsePolicy(f policyFormData) (*accessdomain.Policy, error) {
 		prio = n
 	}
 	p := &accessdomain.Policy{ID: f.ID, Name: strings.TrimSpace(f.Name), Resource: f.Resource, Action: f.Action,
-		Effect: accessdomain.Effect(f.Effect), Priority: prio, Enabled: f.Enabled}
+		Effect: accessdomain.Effect(f.Effect), Priority: prio, Enabled: f.Enabled, Roles: f.Roles}
 	if strings.TrimSpace(f.Root) != "" {
 		p.Root = &accessdomain.ConditionGroup{}
 		if err := decodeStrict(f.Root, p.Root); err != nil {

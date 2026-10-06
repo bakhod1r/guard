@@ -1,0 +1,18 @@
+-- +goose Up
+-- =============================================================
+-- Role binding for ABAC policies. A policy with no rows here applies to every
+-- subject; with rows it is considered only for subjects holding one of the
+-- roles. Deleting a role or a policy removes its bindings.
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS guard_policy_role (
+    policy_id  UUID NOT NULL REFERENCES guard_policy (id) ON DELETE CASCADE,
+    role_id    UUID NOT NULL REFERENCES guard_role (id) ON DELETE CASCADE,
+    PRIMARY KEY (policy_id, role_id)
+);
+
+CREATE INDEX IF NOT EXISTS guard_idx_policy_role_role ON guard_policy_role (role_id);
+
+
+-- +goose Down
+DROP TABLE IF EXISTS guard_policy_role;

@@ -50,10 +50,11 @@ Guards: **public** — none; **auth** — session or API key; **session** — se
 | DELETE | `/guard/roles/:name` | `role.write` | system roles → `409 system_role` |
 | POST | `/guard/roles/:name/permissions` | `role.write` | |
 | DELETE | `/guard/roles/:name/permissions/:code` | `role.write` | |
+| GET | `/guard/roles/:name/policies` | `policy.read` | policies bound to the role plus global ones |
 | GET | `/guard/permissions` | `permission.read` | |
 | POST | `/guard/permissions` | `permission.write` | |
 | GET | `/guard/policies` | `policy.read` | |
-| POST | `/guard/policies` | `policy.write` | |
+| POST | `/guard/policies` | `policy.write` | optional `roles: [...]`; unknown role → `404 role_not_found` |
 | GET | `/guard/policies/:id` | `policy.read` | |
 | PUT | `/guard/policies/:id` | `policy.write` | |
 | DELETE | `/guard/policies/:id` | `policy.write` | |

@@ -81,8 +81,21 @@ func (a *app) roleDetail(c *gin.Context) {
 			grantable = append(grantable, p)
 		}
 	}
+	canPolicies := a.can(c, "policy.read")
+	var policies []policyRow
+	if canPolicies {
+		list, err := a.g.Access.ListPoliciesForRole(ctx, role.Name)
+		if err != nil {
+			a.rbacInternalError(c, err)
+			return
+		}
+		for _, p := range list {
+			policies = append(policies, policyRow{Policy: p, Summary: describe(p.Root)})
+		}
+	}
 	a.render(c, http.StatusOK, "roles_detail", "Role "+role.Name, "roles", map[string]any{
 		"Role": role, "Grantable": grantable, "CanWrite": a.can(c, "role.write"),
+		"CanPolicies": canPolicies, "Policies": policies,
 	})
 }
 

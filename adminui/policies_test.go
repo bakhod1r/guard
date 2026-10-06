@@ -361,3 +361,37 @@ func TestPoliciesInternalErrorsHidden(t *testing.T) {
 		t.Fatalf("simulate: %d", code)
 	}
 }
+
+func TestPoliciesRoleBinding(t *testing.T) {
+	p := policiesAdmin(t)
+	ctx := context.Background()
+	if _, err := p.g.Access.CreateRole(ctx, "night", "Night", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := p.get("/guard-admin/policies/new"); code != http.StatusOK || !strings.Contains(body, `<option value="night">night</option>`) {
+		t.Fatalf("form lacks role option: %d", code)
+	}
+	form := policiesForm("night only", "")
+	form["roles"] = []string{"night"}
+	if code, _, _ := p.post("/guard-admin/policies", form); code != http.StatusSeeOther {
+		t.Fatalf("create: %d", code)
+	}
+	pol := policiesByName(t, p.g, "night only")
+	if pol == nil || len(pol.Roles) != 1 || pol.Roles[0] != "night" {
+		t.Fatalf("stored: %+v", pol)
+	}
+	if _, body := p.get("/guard-admin/policies/" + pol.ID); !strings.Contains(body, `<option value="night" selected>`) {
+		t.Fatal("edit form must preselect bound role")
+	}
+	_, body := p.get("/guard-admin/policies")
+	if !strings.Contains(body, `/guard-admin/roles/night">night</a>`) || !strings.Contains(body, "everyone") {
+		t.Fatal("list must show roles column")
+	}
+	_, body = p.get("/guard-admin/roles/night")
+	if !strings.Contains(body, "Policies that apply") || !strings.Contains(body, "night only") || !strings.Contains(body, "blocked user denied") {
+		t.Fatal("role page must list bound and global policies")
+	}
+	if _, body = p.get("/guard-admin/roles/user"); strings.Contains(body, "night only") {
+		t.Fatal("role page must not list policies bound to other roles")
+	}
+}

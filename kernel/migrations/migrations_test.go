@@ -32,10 +32,10 @@ func renderAll(t *testing.T, ref UserRef) map[string]string {
 func TestRenderSubstitutes(t *testing.T) {
 	for _, typ := range []string{"bigint", "uuid", "character varying(36)"} {
 		files := renderAll(t, UserRef{Table: "users", IDColumn: "id", IDType: typ})
-		if len(files) != 6 {
-			t.Fatalf("%s: want 6 files, got %d", typ, len(files))
+		if len(files) != 7 {
+			t.Fatalf("%s: want 7 files, got %d", typ, len(files))
 		}
-		for _, name := range []string{"00001_guard_init.sql", "00002_guard_seed.sql", "00003_guard_api_key.sql", "00004_guard_indexes.sql", "00005_guard_super_admin.sql", "00006_guard_route.sql"} {
+		for _, name := range []string{"00001_guard_init.sql", "00002_guard_seed.sql", "00003_guard_api_key.sql", "00004_guard_indexes.sql", "00005_guard_super_admin.sql", "00006_guard_route.sql", "00007_guard_policy_role.sql"} {
 			body, ok := files[name]
 			if !ok {
 				t.Fatalf("missing %s", name)
@@ -85,7 +85,7 @@ func TestWriteDoesNotOverwrite(t *testing.T) {
 	ref := UserRef{Table: "users", IDColumn: "id", IDType: "bigint"}
 	dir := filepath.Join(t.TempDir(), "db", "guard")
 	written, err := Write(dir, ref)
-	if err != nil || len(written) != 6 {
+	if err != nil || len(written) != 7 {
 		t.Fatalf("first write: %v %v", written, err)
 	}
 	for _, p := range written {

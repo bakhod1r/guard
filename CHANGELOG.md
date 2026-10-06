@@ -4,6 +4,22 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [v0.4.0] - 2026-10-06
+
+### Added
+- **Role-bound ABAC policies.** `accessdomain.Policy` gains optional `Roles []string` (JSON `roles`). Empty keeps today's behaviour: the policy applies to every subject. Non-empty: the policy is considered only when the subject holds at least one of these roles, checked before the condition tree runs. Wildcard roles (`admin`, `super_admin`) do not match implicitly. `Validate` checks each name against the role-name rule, de-duplicates and sorts. New `Policy.AppliesToRole`.
+- Migration `00007_guard_policy_role`: join table `guard_policy_role(policy_id, role_id)` with `ON DELETE CASCADE` on both sides, same shape as `guard_role_permission`. Policies load with their roles in the existing single query. Saving a policy bound to an unknown role fails with `ErrRoleNotFound`.
+- `Access.ListPoliciesForRole(ctx, role)` returns the policies bound to the role plus the global ones, in evaluation order (strongest priority first). The JSON API adds `GET /guard/roles/:name/policies` (`policy.read`). Policy create, update, get and list carry `roles`. Audit metadata on `policy.create` / `policy.update` includes `roles`.
+- Admin panel: role multi-select on the policy form, a Roles column on the policy list ("everyone" when unbound), and "Policies that apply" on the role page.
+- `Access.MigrateRoleConditions(ctx) (migrated int, err error)`, see Migration below.
+
+### Security
+- Deleting a role drops its policy bindings. A policy bound **only** to that role is disabled in the same transaction instead of becoming unbound, because an unbound policy applies to everyone (an `allow` would otherwise widen). Review and re-bind such policies before re-enabling them.
+
+### Migration
+- No action needed: policies without `roles` behave as before.
+- Optional: `n, err := g.Access.MigrateRoleConditions(ctx)` rewrites the legacy role gate `root = AND{conditions: [], groups: [OR{user.roles contains r…}, body?]}` into `Roles = [r…]` and `Root = body` (or nil without a body). The OR group must hold only single-value `user.roles contains` conditions, with no negate and no subgroups. Any other shape is never touched, nor is a policy naming a role that no longer exists. Idempotent: a second run reports 0. The rewrite goes through `SavePolicy`, so the access cache is invalidated.
+
 ## [adapters v0.2.1] - 2026-09-17
 
 Adapter modules only; the root module stays at v0.2.0, which these still require.
