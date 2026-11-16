@@ -1,7 +1,8 @@
 // Package domain holds authorization rules: RBAC roles/permissions and ABAC policies.
 //
 // Decision algorithm (fail-closed):
-//  1. Enabled policies matching (resource, action) whose condition tree holds
+//  1. Enabled policies matching (resource, action), bound to none or one of the
+//     subject's roles, and whose condition tree holds
 //     are sorted by priority ASC (lower number = stronger).
 //  2. The strongest priority tier decides; inside a tier DENY overrides ALLOW.
 //  3. No policy matched: RBAC decides — a wildcard role or a granted
@@ -155,6 +156,59 @@ type Policy struct {
 	Priority int             `json:"priority"`
 	Enabled  bool            `json:"enabled"`
 	Root     *ConditionGroup `json:"root,omitempty"`
+	// Roles binds the policy to subjects holding at least one of these roles.
+	// Empty means every subject. Wildcard roles do not match implicitly.
+	Roles []string `json:"roles,omitempty"`
+}
+
+// AppliesToRole reports whether p is unbound or bound to role name.
+func (p *Policy) AppliesToRole(name string) bool {
+	if len(p.Roles) == 0 {
+		return true
+	}
+	for _, r := range p.Roles {
+		if r == name {
+			return true
+		}
+	}
+	return false
+}
+
+// appliesToSubject is the cheap role gate run before the condition tree.
+func (p *Policy) appliesToSubject(s Subject) bool {
+	if len(p.Roles) == 0 {
+		return true
+	}
+	for _, role := range s.Roles {
+		for _, r := range p.Roles {
+			if r == role.Name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// normalizeRoles validates, de-duplicates and sorts p.Roles.
+func (p *Policy) normalizeRoles() error {
+	if len(p.Roles) == 0 {
+		p.Roles = nil
+		return nil
+	}
+	seen := make(map[string]bool, len(p.Roles))
+	out := make([]string, 0, len(p.Roles))
+	for _, r := range p.Roles {
+		if !nameRe.MatchString(r) {
+			return fmt.Errorf("%w: role %q must match [a-z0-9_-]{2,64}", ErrInvalidPolicy, r)
+		}
+		if !seen[r] {
+			seen[r] = true
+			out = append(out, r)
+		}
+	}
+	sort.Strings(out)
+	p.Roles = out
+	return nil
 }
 
 func (p *Policy) Validate() error {
@@ -166,6 +220,9 @@ func (p *Policy) Validate() error {
 	}
 	if !validTarget(p.Resource) || !validTarget(p.Action) {
 		return fmt.Errorf("%w: resource and action must be a name or *", ErrInvalidPolicy)
+	}
+	if err := p.normalizeRoles(); err != nil {
+		return err
 	}
 	if p.Root != nil {
 		return p.Root.validate(1)
@@ -245,6 +302,9 @@ func (p *Policy) Matches(r Request) bool {
 		return false
 	}
 	if (p.Resource != "*" && p.Resource != r.Resource.Type) || (p.Action != "*" && p.Action != r.Action) {
+		return false
+	}
+	if !p.appliesToSubject(r.Subject) {
 		return false
 	}
 	return p.Root == nil || p.Root.holds(r, 1)

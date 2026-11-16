@@ -41,6 +41,27 @@
 {{end}}
 {{end}}
 </div>
+{{if .Data.CanPolicies}}
+<div class="card">
+<h2>Policies that apply</h2>
+<p class="mute">Policies bound to this role plus global ones, in evaluation order (lower priority wins).</p>
+{{if .Data.Policies}}
+<div class="scroll"><table>
+<thead><tr><th scope="col">Name</th><th scope="col">Target</th><th scope="col">Binding</th><th scope="col">Effect</th><th scope="col">Priority</th><th scope="col">Conditions</th></tr></thead>
+<tbody>
+{{range .Data.Policies}}
+<tr><td><a href="{{$.Base}}/policies/{{.ID}}">{{.Name}}</a>{{if not .Enabled}} <span class="badge">off</span>{{end}}</td>
+<td class="mono">{{.Resource}}.{{.Action}}</td>
+<td>{{if .Roles}}<span class="badge">bound</span>{{else}}<span class="mute">everyone</span>{{end}}</td>
+<td>{{if eq .Effect "deny"}}<span class="badge bad">deny</span>{{else}}<span class="badge ok">allow</span>{{end}}</td>
+<td>{{.Priority}}</td><td class="mono">{{.Summary}}</td></tr>
+{{end}}
+</tbody></table></div>
+{{else}}
+<div class="empty">No policies apply to this role.</div>
+{{end}}
+</div>
+{{end}}
 {{if and .Data.CanWrite (not $role.IsSystem)}}
 <div class="card">
 <h2>Danger zone</h2>

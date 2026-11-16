@@ -1,11 +1,13 @@
 module github.com/bakhod1r/guard
 
-go 1.26.0
+go 1.26.2
 
 toolchain go1.26.6
 
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
+	github.com/bakhod1r/sessionx v0.1.0
+	github.com/bakhod1r/sessionx/sqlstore v0.1.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/uuid v1.6.0
@@ -16,6 +18,10 @@ require (
 )
 
 require (
+	github.com/bakhod1r/alx v0.1.0 // indirect
+	github.com/bakhod1r/devicex v0.3.0 // indirect
+	github.com/bakhod1r/enumx v1.2.1 // indirect
+	github.com/bakhod1r/uax v0.1.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect

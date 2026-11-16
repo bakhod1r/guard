@@ -3,6 +3,8 @@ package application
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -176,4 +178,67 @@ func (s *Service) Policy(ctx context.Context, id string) (*domain.Policy, error)
 
 func (s *Service) ListPolicies(ctx context.Context) ([]domain.Policy, error) {
 	return s.policies.ListPolicies(ctx)
+}
+
+// ListPoliciesForRole returns the policies that can apply to holders of role:
+// those bound to it plus the unbound (global) ones, strongest priority first
+// (the evaluation order, lower number first).
+func (s *Service) ListPoliciesForRole(ctx context.Context, role string) ([]domain.Policy, error) {
+	if _, err := s.roles.Role(ctx, role); err != nil {
+		return nil, err
+	}
+	all, err := s.policies.ListPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.Policy, 0, len(all))
+	for _, p := range all {
+		if p.AppliesToRole(role) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+// MigrateRoleConditions moves the legacy role gate
+// AND(OR(user.roles contains r…), body?) of every stored policy into
+// Policy.Roles (see domain.LiftRoleConditions). Other shapes are untouched, so
+// it is safe to run repeatedly; a second run migrates 0.
+func (s *Service) MigrateRoleConditions(ctx context.Context) (int, error) {
+	all, err := s.policies.ListPolicies(ctx)
+	if err != nil {
+		return 0, err
+	}
+	migrated := 0
+	for i := range all {
+		p := &all[i]
+		if !domain.LiftRoleConditions(p) {
+			continue
+		}
+		// A condition naming a role that no longer exists cannot become a binding;
+		// keep that policy in its legacy shape.
+		if missing, err := s.anyRoleMissing(ctx, p.Roles); err != nil {
+			return migrated, err
+		} else if missing {
+			continue
+		}
+		if err := s.SavePolicy(ctx, p); err != nil {
+			return migrated, fmt.Errorf("migrate policy %q: %w", p.Name, err)
+		}
+		migrated++
+	}
+	return migrated, nil
+}
+
+func (s *Service) anyRoleMissing(ctx context.Context, roles []string) (bool, error) {
+	for _, r := range roles {
+		_, err := s.roles.Role(ctx, r)
+		if errors.Is(err, domain.ErrRoleNotFound) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
 }

@@ -1,0 +1,31 @@
+-- +goose Up
+-- =============================================================
+-- Login sessions in PostgreSQL (Config.SessionStore = SessionPostgres), kept by
+-- github.com/bakhod1r/sessionx/sqlstore. The columns are sessionx's own: the whole
+-- session (device, client, network, locale, caller data, lifecycle status and
+-- timestamps) is stored. id is the SHA-256 of the token; the token is never stored.
+-- user_id is not a foreign key: a session may belong to a subject the host keeps elsewhere.
+-- Unused when sessions live in Redis (the default).
+-- =============================================================
+
+CREATE TABLE IF NOT EXISTS guard_session (
+    id            TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL,
+    device        JSONB NOT NULL DEFAULT '{}',
+    client        JSONB NOT NULL DEFAULT '{}',
+    network       JSONB NOT NULL DEFAULT '{}',
+    data          JSONB NOT NULL DEFAULT '{}',
+    locale        TEXT NOT NULL DEFAULT '',
+    locale_source TEXT NOT NULL DEFAULT '',
+    created_at    TIMESTAMPTZ NOT NULL,
+    last_seen     TIMESTAMPTZ NOT NULL,
+    expires_at    TIMESTAMPTZ NOT NULL,
+    renewed_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS guard_idx_session_user ON guard_session (user_id, last_seen DESC);
+CREATE INDEX IF NOT EXISTS guard_idx_session_expires ON guard_session (expires_at);
+
+-- +goose Down
+DROP TABLE IF EXISTS guard_session;

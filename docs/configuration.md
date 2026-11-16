@@ -77,6 +77,8 @@ r.Run(":8080")
 | `default_role` | string | `user` | role given on register |
 | `session.idle` | duration | `30m` | idle timeout (sliding) |
 | `session.absolute` | duration | `168h` | absolute session lifetime |
+| `session.store` | string | `redis` | `redis` or `postgres`. `postgres` keeps the full session in `guard_session` (migration `00008`, via [sessionx](https://github.com/bakhod1r/sessionx)) so sessions survive Redis restarts and flushes |
+| `session.legacy_redis` | bool | `false` | with `store: postgres`, also read sessions still in Redis and move them over; turn off once `session.absolute` has passed |
 | `lockout.attempts` | int | `5` | failed logins before lockout |
 | `lockout.window` | duration | `15m` | lockout window |
 | `audit.async_buffer` | int | `0` | in-process async audit buffer; `0` = synchronous |

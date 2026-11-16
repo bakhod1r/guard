@@ -60,6 +60,10 @@ type File struct {
 		Idle       Duration `yaml:"idle"`
 		Absolute   Duration `yaml:"absolute"`
 		MaxPerUser int      `yaml:"max_per_user"`
+		// Store is "redis" (default) or "postgres" (table guard_session, migration 00008).
+		Store string `yaml:"store"`
+		// LegacyRedis, with store "postgres", also reads sessions still in Redis and moves them over.
+		LegacyRedis bool `yaml:"legacy_redis"`
 	} `yaml:"session"`
 	Lockout struct {
 		Attempts int      `yaml:"attempts"`
@@ -142,6 +146,8 @@ var identRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_
 // Empty user_table / user_id_column fall back to Guard's defaults.
 func (f *File) Validate() error {
 	switch {
+	case f.Session.Store != "" && f.Session.Store != string(guard.SessionRedis) && f.Session.Store != string(guard.SessionPostgres):
+		return fmt.Errorf("config: session.store %q must be %q or %q", f.Session.Store, guard.SessionRedis, guard.SessionPostgres)
 	case f.Database.URL == "":
 		return fmt.Errorf("config: database.url is required")
 	case f.Redis.Addr == "":
@@ -202,7 +208,9 @@ func (f *File) auditEmailKey() ([]byte, error) {
 
 func (f *File) guardConfig() guard.Config {
 	c := guard.Config{
-		RedisPrefix: f.Redis.Prefix,
+		RedisPrefix:         f.Redis.Prefix,
+		SessionStore:        guard.SessionStore(f.Session.Store),
+		LegacyRedisSessions: f.Session.LegacyRedis,
 		Session: guard.SessionPolicy{
 			IdleTimeout:     time.Duration(f.Session.Idle),
 			AbsoluteTimeout: time.Duration(f.Session.Absolute),
