@@ -46,6 +46,7 @@ type Router interface {
 //	  GET    /roles/{name}  DELETE /roles/{name}
 //	  POST   /roles/{name}/permissions         role.write
 //	  DELETE /roles/{name}/permissions/{code}  role.write
+//	  GET    /roles/{name}/policies            policy.read
 //	  GET    /permissions  POST /permissions   permission.read / permission.write
 //	  GET    /policies  POST /policies         policy.read / policy.write
 //	  GET|PUT|DELETE /policies/{id}
@@ -103,6 +104,7 @@ func Mount(r Router, g *guard.Guard, opts Options) {
 	admin("DELETE /roles/{name}", h.deleteRole, perm("role.write"))
 	admin("POST /roles/{name}/permissions", h.grantPermission, perm("role.write"))
 	admin("DELETE /roles/{name}/permissions/{code}", h.revokePermission, perm("role.write"))
+	admin("GET /roles/{name}/policies", h.rolePolicies, perm("policy.read"))
 
 	admin("GET /permissions", h.listPermissions, perm("permission.read"))
 	admin("POST /permissions", h.createPermission, perm("permission.write"))
@@ -714,6 +716,16 @@ func (h *handlers) listPolicies(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, http.StatusOK, map[string]any{"policies": list})
 }
 
+// rolePolicies lists the policies bound to the role plus the global ones.
+func (h *handlers) rolePolicies(w http.ResponseWriter, r *http.Request) {
+	list, err := h.g.Access.ListPoliciesForRole(r.Context(), h.param(r, "name"))
+	if err != nil {
+		fail(w, r, err)
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{"policies": list})
+}
+
 func (h *handlers) createPolicy(w http.ResponseWriter, r *http.Request) {
 	var p accessdomain.Policy
 	if !bind(w, r, &p) {
@@ -724,7 +736,7 @@ func (h *handlers) createPolicy(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	h.audit(r, "policy.create", p.ID, map[string]any{"name": p.Name})
+	h.audit(r, "policy.create", p.ID, map[string]any{"name": p.Name, "roles": p.Roles})
 	writeJSON(w, r, http.StatusCreated, p)
 }
 
@@ -753,7 +765,7 @@ func (h *handlers) updatePolicy(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, err)
 		return
 	}
-	h.audit(r, "policy.update", p.ID, map[string]any{"name": p.Name})
+	h.audit(r, "policy.update", p.ID, map[string]any{"name": p.Name, "roles": p.Roles})
 	writeJSON(w, r, http.StatusOK, p)
 }
 

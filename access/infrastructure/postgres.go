@@ -44,12 +44,23 @@ func (r *Postgres) CreateRole(ctx context.Context, role *domain.Role) error {
 	return err
 }
 
+// DeleteRole removes the role; ON DELETE CASCADE drops its policy bindings.
+// A policy bound only to this role is disabled first: losing its last role
+// would otherwise widen it to every subject.
 func (r *Postgres) DeleteRole(ctx context.Context, name string) error {
-	tag, err := r.db.Exec(ctx, `DELETE FROM guard_role WHERE name=$1`, name)
-	if err == nil && tag.RowsAffected() == 0 {
-		return domain.ErrRoleNotFound
-	}
-	return err
+	return pgx.BeginFunc(ctx, r.db, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE guard_policy p SET enabled=false, updated_at=now()
+			WHERE p.enabled AND EXISTS (SELECT 1 FROM guard_policy_role pr JOIN guard_role r ON r.id=pr.role_id
+				WHERE pr.policy_id=p.id AND r.name=$1)
+			AND (SELECT count(*) FROM guard_policy_role pr WHERE pr.policy_id=p.id) = 1`, name); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM guard_role WHERE name=$1`, name)
+		if err == nil && tag.RowsAffected() == 0 {
+			return domain.ErrRoleNotFound
+		}
+		return err
+	})
 }
 
 const roleSelect = `SELECT r.name, r.title, COALESCE(r.description,''), r.is_system, r.wildcard,
@@ -255,11 +266,34 @@ func (r *Postgres) SavePolicy(ctx context.Context, p *domain.Policy) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM guard_policy_condition_group WHERE policy_id=$1`, p.ID); err != nil {
 			return err
 		}
+		if err := savePolicyRoles(ctx, tx, p); err != nil {
+			return err
+		}
 		if p.Root == nil {
 			return nil
 		}
 		return insertGroup(ctx, tx, p.ID, nil, 0, p.Root)
 	})
+}
+
+// savePolicyRoles replaces the role binding of p. An unknown role fails with
+// domain.ErrRoleNotFound and rolls the whole save back.
+func savePolicyRoles(ctx context.Context, tx pgx.Tx, p *domain.Policy) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM guard_policy_role WHERE policy_id=$1`, p.ID); err != nil {
+		return err
+	}
+	if len(p.Roles) == 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO guard_policy_role (policy_id, role_id)
+		SELECT $1, id FROM guard_role WHERE name = ANY($2::varchar[])`, p.ID, p.Roles)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != int64(len(p.Roles)) {
+		return domain.ErrRoleNotFound
+	}
+	return nil
 }
 
 func insertGroup(ctx context.Context, tx pgx.Tx, policyID string, parent *string, pos int, g *domain.ConditionGroup) error {
@@ -323,8 +357,11 @@ func (r *Postgres) ApplicablePolicies(ctx context.Context, resource, action stri
 // one row per (policy, group, condition), ordered so groups and conditions keep
 // their stored positions. CASE (not COALESCE) keeps NULLs in real columns a scan error.
 func (r *Postgres) loadPolicies(ctx context.Context, where string, args ...any) ([]domain.Policy, error) {
-	rows, err := r.db.Query(ctx, `WITH p AS (SELECT id, name, resource, action, effect, priority, enabled FROM guard_policy `+where+`)
-		SELECT p.id::text, p.name, p.resource, p.action, p.effect, p.priority, p.enabled,
+	rows, err := r.db.Query(ctx, `WITH p AS (SELECT id, name, resource, action, effect, priority, enabled,
+				COALESCE((SELECT array_agg(r.name::text ORDER BY r.name) FROM guard_policy_role pr
+					JOIN guard_role r ON r.id = pr.role_id WHERE pr.policy_id = guard_policy.id), '{}') AS roles
+				FROM guard_policy `+where+`)
+		SELECT p.id::text, p.name, p.resource, p.action, p.effect, p.priority, p.enabled, p.roles,
 			COALESCE(g.id::text, ''), COALESCE(g.parent_group_id::text, ''),
 			CASE WHEN g.id IS NULL THEN 'and' ELSE g.logical_operator END,
 			CASE WHEN g.id IS NULL THEN false ELSE g.negate END,
@@ -354,13 +391,16 @@ func (r *Postgres) loadPolicies(ctx context.Context, where string, args ...any) 
 		var p domain.Policy
 		var effect, gid, parent, op, field, cop string
 		var negate, hasCond bool
-		var value []string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Resource, &p.Action, &effect, &p.Priority, &p.Enabled,
+		var value, roles []string
+		if err := rows.Scan(&p.ID, &p.Name, &p.Resource, &p.Action, &effect, &p.Priority, &p.Enabled, &roles,
 			&gid, &parent, &op, &negate, &hasCond, &field, &cop, &value); err != nil {
 			return nil, err
 		}
 		if p.ID != lastPolicy {
 			p.Effect = domain.Effect(effect)
+			if len(roles) > 0 {
+				p.Roles = roles
+			}
 			policies = append(policies, p)
 			lastPolicy = p.ID
 		}

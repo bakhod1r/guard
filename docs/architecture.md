@@ -61,10 +61,11 @@ flowchart LR
 Source: `access/domain/access.go` `Decide`.
 
 1. Load enabled policies whose `(resource, action)` matches the request (exact or `*`).
-2. Keep policies whose condition tree holds (`and`/`or`, `negate`; operators `eq ne gt lt gte lte in not_in contains`; fields `user.*`, `resource.*`, `env.*`; values starting `$` dereference attributes, e.g. `$user.id`).
-3. If any matched: sort by `priority` ascending (lower = stronger). Among policies with the **top** priority only, any `deny` → **deny**; otherwise **allow**. Weaker tiers are ignored.
-4. If none matched: RBAC — allow if any role is `wildcard` or grants `resource.action`.
-5. Otherwise **deny** (fail-closed).
+2. Drop policies bound to roles (`Policy.Roles`) the subject holds none of. An unbound policy applies to everyone. Wildcard roles do not match a binding implicitly.
+3. Keep policies whose condition tree holds (`and`/`or`, `negate`; operators `eq ne gt lt gte lte in not_in contains`; fields `user.*`, `resource.*`, `env.*`; values starting `$` dereference attributes, e.g. `$user.id`).
+4. If any matched: sort by `priority` ascending (lower = stronger). Among policies with the **top** priority only, any `deny` → **deny**; otherwise **allow**. Weaker tiers are ignored.
+5. If none matched: RBAC — allow if any role is `wildcard` or grants `resource.action`.
+6. Otherwise **deny** (fail-closed).
 
 ```mermaid
 flowchart TD
@@ -93,6 +94,8 @@ erDiagram
   guard_role ||--o{ guard_role_permission : ""
   guard_permission ||--o{ guard_role_permission : ""
   guard_policy ||--o{ guard_policy_condition_group : ""
+  guard_policy ||--o{ guard_policy_role : "bound to"
+  guard_role ||--o{ guard_policy_role : ""
   guard_policy_condition_group ||--o{ guard_policy_condition_group : "parent"
   guard_policy_condition_group ||--o{ guard_policy_condition : ""
 
@@ -122,6 +125,8 @@ erDiagram
     varchar effect "allow|deny"
     int priority
     bool enabled }
+  guard_policy_role { uuid policy_id PK,FK
+    uuid role_id PK,FK }
   guard_policy_condition_group { uuid id PK
     uuid policy_id FK
     uuid parent_group_id FK

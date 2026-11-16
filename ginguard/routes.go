@@ -39,6 +39,7 @@ import (
 //	  GET    /roles/:name  DELETE /roles/:name
 //	  POST   /roles/:name/permissions         role.write
 //	  DELETE /roles/:name/permissions/:code   role.write
+//	  GET    /roles/:name/policies            policy.read
 //	  GET    /permissions  POST /permissions  permission.read / permission.write
 //	  GET    /policies  POST /policies        policy.read / policy.write
 //	  GET|PUT|DELETE /policies/:id
@@ -90,6 +91,7 @@ func Mount(r gin.IRouter, g *guard.Guard, opts Options) {
 	m.DELETE("/roles/:name", perm("role.write"), h.deleteRole)
 	m.POST("/roles/:name/permissions", perm("role.write"), h.grantPermission)
 	m.DELETE("/roles/:name/permissions/:code", perm("role.write"), h.revokePermission)
+	m.GET("/roles/:name/policies", perm("policy.read"), h.rolePolicies)
 
 	m.GET("/permissions", perm("permission.read"), h.listPermissions)
 	m.POST("/permissions", perm("permission.write"), h.createPermission)
@@ -653,6 +655,16 @@ func (h *handlers) listPolicies(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"policies": list})
 }
 
+// rolePolicies lists the policies bound to the role plus the global ones.
+func (h *handlers) rolePolicies(c *gin.Context) {
+	list, err := h.g.Access.ListPoliciesForRole(c.Request.Context(), c.Param("name"))
+	if err != nil {
+		fail(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"policies": list})
+}
+
 func (h *handlers) createPolicy(c *gin.Context) {
 	var p accessdomain.Policy
 	if !bind(c, &p) {
@@ -663,7 +675,7 @@ func (h *handlers) createPolicy(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	h.audit(c, "policy.create", p.ID, map[string]any{"name": p.Name})
+	h.audit(c, "policy.create", p.ID, map[string]any{"name": p.Name, "roles": p.Roles})
 	c.JSON(http.StatusCreated, p)
 }
 
@@ -691,7 +703,7 @@ func (h *handlers) updatePolicy(c *gin.Context) {
 		fail(c, err)
 		return
 	}
-	h.audit(c, "policy.update", p.ID, map[string]any{"name": p.Name})
+	h.audit(c, "policy.update", p.ID, map[string]any{"name": p.Name, "roles": p.Roles})
 	c.JSON(http.StatusOK, p)
 }
 

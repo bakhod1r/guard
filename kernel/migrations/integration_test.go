@@ -253,7 +253,7 @@ func TestConcurrentUpIntegration(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*), count(DISTINCT version_id) FROM `+VersionTable+` WHERE version_id > 0`).Scan(&applied, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if applied != 6 || distinct != 6 {
+	if applied != 8 || distinct != 8 {
 		t.Fatalf("applied=%d distinct=%d, want 6/6", applied, distinct)
 	}
 	var roles int

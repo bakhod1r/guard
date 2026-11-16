@@ -293,9 +293,23 @@ func TestAdminPolicyCRUDAndAudit(t *testing.T) {
 	if code, _ := c.do("GET", "/api/guard/policies/"+id, root, nil); code != http.StatusOK {
 		t.Fatalf("get policy: %d", code)
 	}
+	if roles := body["roles"]; roles != nil {
+		t.Fatalf("unbound policy must omit roles: %v", body)
+	}
+	if code, body := c.do("POST", "/api/guard/roles", root, map[string]any{"name": "night", "title": "Night"}); code != http.StatusCreated {
+		t.Fatalf("create role: %d %v", code, body)
+	}
+	policy["roles"] = []string{"night", "night"}
 	policy["name"] = "night shift v2"
 	if code, body := c.do("PUT", "/api/guard/policies/"+id, root, policy); code != http.StatusOK {
 		t.Fatalf("update policy: %d %v", code, body)
+	}
+	code, body = c.do("GET", "/api/guard/roles/night/policies", root, nil)
+	if code != http.StatusOK || !strings.Contains(jsonString(body), `"roles":["night"]`) {
+		t.Fatalf("role policies: %d %v", code, body)
+	}
+	if code, _ := c.do("GET", "/api/guard/roles/ghost/policies", root, nil); code != http.StatusNotFound {
+		t.Fatalf("unknown role policies: %d", code)
 	}
 	if code, _ := c.do("DELETE", "/api/guard/policies/"+id, root, nil); code != http.StatusNoContent {
 		t.Fatalf("delete policy: %d", code)
@@ -306,6 +320,9 @@ func TestAdminPolicyCRUDAndAudit(t *testing.T) {
 	}
 	if !strings.Contains(jsonString(body), "policy.create") {
 		t.Fatalf("audit missing policy.create: %v", body)
+	}
+	if !strings.Contains(jsonString(body), `"roles":["night"]`) {
+		t.Fatalf("audit policy.update missing roles: %v", body)
 	}
 }
 

@@ -16,6 +16,11 @@
 <div class="field"><label for="p-prio">Priority (lower wins)</label><input id="p-prio" name="priority" type="number" value="{{$d.Priority}}"></div>
 <div class="field"><label for="p-en" class="check"><input id="p-en" class="auto" type="checkbox" name="enabled"{{if $d.Enabled}} checked{{end}}> Enabled</label></div>
 </div>
+<div class="field"><label for="p-roles">Roles (none selected = applies to everyone)</label>
+<select id="p-roles" name="roles" multiple size="{{if gt (len $d.AllRoles) 6}}6{{else}}{{len $d.AllRoles}}{{end}}">
+{{range $d.AllRoles}}<option value="{{.}}"{{if $d.HasRole .}} selected{{end}}>{{.}}</option>
+{{end}}</select>
+<p class="mute">The policy is considered only for users holding at least one selected role. Wildcard roles do not match implicitly.</p></div>
 <div class="field"><label for="p-root">Condition tree (JSON; empty = always matches)</label>
 <textarea id="p-root" name="root" rows="14" spellcheck="false" aria-describedby="p-help">{{$d.Root}}</textarea></div>
 {{if $d.CanWrite}}<div class="row"><button class="btn primary">Save policy</button><button type="button" class="btn" id="p-fmt">Format JSON</button><span id="p-fmt-err" class="mute" role="status"></span></div>{{end}}

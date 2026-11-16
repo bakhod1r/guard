@@ -393,6 +393,7 @@ func clonePolicies(in []domain.Policy) []domain.Policy {
 	out := make([]domain.Policy, len(in))
 	for i, p := range in {
 		out[i] = p
+		out[i].Roles = cloneSlice(p.Roles)
 		if p.Root != nil {
 			root := cloneGroup(*p.Root)
 			out[i].Root = &root
@@ -451,6 +452,8 @@ func (c *Cached) CreateRole(ctx context.Context, r *domain.Role) error {
 	return err
 }
 
+// DeleteRole also drops the role's policy bindings, so policy caches go too:
+// the version bump invalidates grants and policies together.
 func (c *Cached) DeleteRole(ctx context.Context, name string) error {
 	err := c.RoleRepository.DeleteRole(ctx, name)
 	c.invalidate(ctx)

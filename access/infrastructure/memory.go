@@ -2,6 +2,7 @@ package infrastructure
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -49,6 +50,18 @@ func (m *Memory) DeleteRole(_ context.Context, name string) error {
 	delete(m.roles, name)
 	for _, g := range m.grants {
 		delete(g, name)
+	}
+	// Mirror ON DELETE CASCADE on guard_policy_role; a policy losing its last
+	// role is disabled rather than widened to every subject.
+	for id, p := range m.policies {
+		if i := slices.Index(p.Roles, name); i >= 0 {
+			p.Roles = slices.Delete(slices.Clone(p.Roles), i, i+1)
+			if len(p.Roles) == 0 {
+				p.Roles = nil
+				p.Enabled = false
+			}
+			m.policies[id] = p
+		}
 	}
 	return nil
 }
@@ -184,7 +197,14 @@ func (m *Memory) SavePolicy(_ context.Context, p *domain.Policy) error {
 			return domain.ErrPolicyNameTaken
 		}
 	}
-	m.policies[p.ID] = *p
+	for _, r := range p.Roles {
+		if _, ok := m.roles[r]; !ok {
+			return domain.ErrRoleNotFound
+		}
+	}
+	cp := *p
+	cp.Roles = slices.Clone(p.Roles)
+	m.policies[p.ID] = cp
 	return nil
 }
 
@@ -205,6 +225,7 @@ func (m *Memory) Policy(_ context.Context, id string) (*domain.Policy, error) {
 	if !ok {
 		return nil, domain.ErrPolicyNotFound
 	}
+	p.Roles = slices.Clone(p.Roles)
 	return &p, nil
 }
 
@@ -213,6 +234,7 @@ func (m *Memory) ListPolicies(_ context.Context) ([]domain.Policy, error) {
 	defer m.mu.RUnlock()
 	out := make([]domain.Policy, 0, len(m.policies))
 	for _, p := range m.policies {
+		p.Roles = slices.Clone(p.Roles)
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool {

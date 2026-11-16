@@ -32,6 +32,11 @@ session:
   absolute: 168h
   # Max concurrent sessions per user; oldest are revoked. 0 = unlimited.
   max_per_user: 0
+  # Where sessions live: "redis" (default) or "postgres" (table guard_session, migration 00008:
+  # durable across Redis restarts and flushes, keeps the full session).
+  store: redis
+  # With store: postgres, also pick up sessions still in Redis and move them over (turn off after `absolute`).
+  legacy_redis: false
 
 lockout:
   # Failed logins before the account is temporarily locked.
