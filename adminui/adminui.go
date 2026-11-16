@@ -358,7 +358,7 @@ func safeNext(base, next string) string {
 func (a *app) login(c *gin.Context) {
 	next := safeNext(a.o.Path, c.PostForm("next"))
 	res, err := a.g.Login(c.Request.Context(), c.PostForm("email"), c.PostForm("password"),
-		guard.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()})
+		guard.MetaFromRequest(c.Request, c.ClientIP()))
 	if err != nil {
 		// Lockout and ban are not revealed: they would enumerate accounts
 		// and confirm passwords. The audit log records the real cause.
@@ -378,7 +378,7 @@ func (a *app) login(c *gin.Context) {
 
 func (a *app) logout(c *gin.Context) {
 	p := ginPrincipal(c)
-	_ = a.g.Logout(c.Request.Context(), p, guard.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()})
+	_ = a.g.Logout(c.Request.Context(), p, guard.MetaFromRequest(c.Request, c.ClientIP()))
 	c.SetSameSite(http.SameSiteStrictMode)
 	c.SetCookie(a.o.CookieName, "", -1, "/", "", !a.o.InsecureCookie, true)
 	c.Redirect(http.StatusSeeOther, a.o.Path+"/login")
@@ -387,7 +387,7 @@ func (a *app) logout(c *gin.Context) {
 func (a *app) actor(c *gin.Context) string { return string(ginPrincipal(c).User.ID) }
 
 func (a *app) meta(c *gin.Context) guard.RequestMeta {
-	return guard.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}
+	return guard.MetaFromRequest(c.Request, c.ClientIP())
 }
 
 func (a *app) audit(c *gin.Context, action, target string, md map[string]any) {

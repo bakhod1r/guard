@@ -4,11 +4,12 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-## [v0.5.0] - 2026-11-16
+## [v0.5.2] - 2026-11-16
 
 ### Added
 - Selectable session store: `Config.SessionStore` (`SessionRedis`, the default, or `SessionPostgres`) and YAML `session.store`. `SessionPostgres` keeps the full session (device, network, status, timestamps) in `guard_session` through [sessionx](https://github.com/bakhod1r/sessionx)'s `sqlstore` (the User-Agent is parsed into brand, OS, browser, form factor and a human-or-bot verdict), so sessions survive Redis restarts, evictions and flushes. Needs migration `00008_guard_session`.
 - `Config.LegacyRedisSessions` / `session.legacy_redis`: with `SessionPostgres`, sessions still in Redis are read and moved to PostgreSQL on first use, so switching stores signs nobody out.
+- The session now carries the rest of the sessionx record: `Forwarded` (X-Forwarded-For as received), `Locale` and `LocaleSource`, and `RenewedAt` (set on every `Rotate`). `RequestMeta` and `StartInput` gain `Forwarded`, `Locale`, `LocaleSource`; new `guard.MetaFromRequest(r, ip)` fills them from a request (User-Agent, X-Forwarded-For, first Accept-Language tag) and is used by `httpguard`, `ginguard` and `adminui`. The Redis store keeps them too (JSON).
 - `session/infrastructure.NewPostgresSessions`: the `sessiondomain.Repository` (with `Toucher`, `Taker`, `LimitedSaver`) over sessionx.
 
 ### Documentation

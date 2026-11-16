@@ -23,12 +23,17 @@ type StartInput struct {
 	IP        string
 	UserAgent string
 	Metadata  map[string]string
+	// Forwarded, Locale and LocaleSource are stored with the session when known.
+	Forwarded    string
+	Locale       string
+	LocaleSource string
 }
 
 func (s *Service) Start(ctx context.Context, in StartInput) (*domain.Session, domain.Token, error) {
 	now := s.now().UTC()
 	sess, tok := domain.New(in.UserID, now, s.policy)
 	sess.IP, sess.UserAgent, sess.Metadata = in.IP, in.UserAgent, in.Metadata
+	sess.Forwarded, sess.Locale, sess.LocaleSource = in.Forwarded, in.Locale, in.LocaleSource
 	if err := s.save(ctx, sess, sess.TTL(now, s.policy)); err != nil {
 		return nil, "", err
 	}
@@ -110,6 +115,7 @@ func (s *Service) Rotate(ctx context.Context, tok domain.Token) (*domain.Session
 	newTok := domain.NewToken()
 	next.ID = newTok.ID()
 	next.Touch(now)
+	next.RenewedAt = now
 	if err := s.repo.Save(ctx, &next, next.TTL(now, s.policy)); err != nil {
 		return nil, "", err
 	}
@@ -136,6 +142,7 @@ func (s *Service) rotateTaken(ctx context.Context, taker domain.Taker, tok domai
 	newTok := domain.NewToken()
 	next.ID = newTok.ID()
 	next.Touch(now)
+	next.RenewedAt = now
 	if err := s.repo.Save(ctx, &next, next.TTL(now, s.policy)); err != nil {
 		_ = s.repo.Save(ctx, old, old.TTL(now, s.policy))
 		return nil, "", err

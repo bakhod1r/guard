@@ -46,7 +46,8 @@ func toX(s *domain.Session) *sessionx.Session {
 	device.Raw = s.UserAgent
 	x := &sessionx.Session{
 		ID: string(s.ID), UserID: s.UserID, Status: sessionx.StatusActive,
-		Device: device, Client: client, Network: sessionx.Network{IP: s.IP},
+		Device: device, Client: client, Network: sessionx.Network{IP: s.IP, Forwarded: s.Forwarded},
+		Locale: s.Locale, LocaleSource: s.LocaleSource, RenewedAt: s.RenewedAt,
 		CreatedAt: s.CreatedAt, LastSeen: s.LastSeenAt, ExpiresAt: s.ExpiresAt,
 		Data: map[string]any{},
 	}
@@ -62,7 +63,8 @@ func toX(s *domain.Session) *sessionx.Session {
 
 func fromX(x *sessionx.Session) *domain.Session {
 	s := &domain.Session{ID: domain.ID(x.ID), UserID: x.UserID, CreatedAt: x.CreatedAt, LastSeenAt: x.LastSeen,
-		ExpiresAt: x.ExpiresAt, IP: x.Network.IP, UserAgent: x.Device.Raw}
+		ExpiresAt: x.ExpiresAt, IP: x.Network.IP, UserAgent: x.Device.Raw, Forwarded: x.Network.Forwarded,
+		Locale: x.Locale, LocaleSource: x.LocaleSource, RenewedAt: x.RenewedAt}
 	if meta, ok := x.Data["metadata"].(map[string]any); ok && len(meta) > 0 {
 		s.Metadata = make(map[string]string, len(meta))
 		for k, v := range meta {
