@@ -58,6 +58,13 @@ type Session struct {
 	IP         string            `json:"ip,omitempty"`
 	UserAgent  string            `json:"user_agent,omitempty"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
+	// Forwarded is the X-Forwarded-For chain as it arrived (kept even when untrusted, so a spoof attempt shows in the record).
+	Forwarded string `json:"forwarded,omitempty"`
+	// Locale is the language tag resolved for the session ("uz"), LocaleSource where it came from ("header", "cookie", ...).
+	Locale       string `json:"locale,omitempty"`
+	LocaleSource string `json:"locale_source,omitempty"`
+	// RenewedAt is when the token was last rotated; zero if never.
+	RenewedAt time.Time `json:"renewed_at,omitzero"`
 }
 
 func New(userID string, now time.Time, p Policy) (*Session, Token) {

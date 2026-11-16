@@ -55,7 +55,7 @@ func TestIntegrationPostgresSessions(t *testing.T) {
 		return n
 	}
 
-	s, tok, err := g.Sessions.Start(ctx, sessionapp.StartInput{UserID: "7", IP: "203.0.113.9", UserAgent: iphoneUA, Metadata: map[string]string{"k": "v"}})
+	s, tok, err := g.Sessions.Start(ctx, sessionapp.StartInput{UserID: "7", IP: "203.0.113.9", UserAgent: iphoneUA, Metadata: map[string]string{"k": "v"}, Forwarded: "198.51.100.7, 203.0.113.9", Locale: "uz", LocaleSource: "header"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +85,23 @@ func TestIntegrationPostgresSessions(t *testing.T) {
 		t.Fatalf("device not parsed: os=%q raw=%q human=%v", os, family, human)
 	}
 
+	// the rest of the sessionx record: forwarded chain, locale, and (after a rotation) renewed_at
+	var fwd, loc, src string
+	if err := pool.QueryRow(ctx, `SELECT network->>'Forwarded', locale, locale_source FROM guard_session WHERE id = $1`, string(s.ID)).Scan(&fwd, &loc, &src); err != nil {
+		t.Fatal(err)
+	}
+	if fwd != "198.51.100.7, 203.0.113.9" || loc != "uz" || src != "header" {
+		t.Fatalf("forwarded/locale = %q %q %q", fwd, loc, src)
+	}
+
 	// rotate: one winner, the old token dies
-	_, tok2, err := g.Sessions.Rotate(ctx, tok)
+	rs, tok2, err := g.Sessions.Rotate(ctx, tok)
 	if err != nil {
 		t.Fatal(err)
+	}
+	var renewed *time.Time
+	if err := pool.QueryRow(ctx, `SELECT renewed_at FROM guard_session WHERE id = $1`, string(rs.ID)).Scan(&renewed); err != nil || renewed == nil {
+		t.Fatalf("renewed_at after rotate: %v %v", renewed, err)
 	}
 	if _, err := g.Sessions.Resolve(ctx, tok); err != sessiondomain.ErrSessionNotFound {
 		t.Fatalf("old token: %v", err)

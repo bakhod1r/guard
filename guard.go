@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -406,6 +407,25 @@ func (g *Guard) Migrate(ctx context.Context, dir string) error {
 type RequestMeta struct {
 	IP        string
 	UserAgent string
+	// Forwarded is the X-Forwarded-For header as received; Locale and LocaleSource the resolved language ("header" for
+	// Accept-Language). They are stored with the session when the session store keeps them (SessionPostgres).
+	Forwarded    string
+	Locale       string
+	LocaleSource string
+}
+
+// MetaFromRequest builds the RequestMeta for r. ip is the client address the host resolved (it may trust proxies; Guard
+// does not); the rest is read from the request: User-Agent, X-Forwarded-For and the first Accept-Language tag.
+func MetaFromRequest(r *http.Request, ip string) RequestMeta {
+	m := RequestMeta{IP: ip, UserAgent: r.UserAgent(), Forwarded: r.Header.Get("X-Forwarded-For")}
+	if al := r.Header.Get("Accept-Language"); al != "" {
+		tag, _, _ := strings.Cut(al, ",")
+		tag, _, _ = strings.Cut(tag, ";")
+		if tag = strings.TrimSpace(tag); tag != "" && tag != "*" {
+			m.Locale, m.LocaleSource = tag, "header"
+		}
+	}
+	return m
 }
 
 func (g *Guard) record(ctx context.Context, e audit.Event) {
@@ -528,7 +548,8 @@ func (g *Guard) Login(ctx context.Context, email, password string, meta RequestM
 		g.logger.InfoContext(ctx, "guard: login failed", "email_sha256", emailFingerprint(email), "ip", meta.IP, "error", err.Error())
 		return nil, err
 	}
-	s, tok, err := g.Sessions.Start(ctx, sessionapp.StartInput{UserID: string(u.ID), IP: meta.IP, UserAgent: meta.UserAgent})
+	s, tok, err := g.Sessions.Start(ctx, sessionapp.StartInput{UserID: string(u.ID), IP: meta.IP, UserAgent: meta.UserAgent,
+		Forwarded: meta.Forwarded, Locale: meta.Locale, LocaleSource: meta.LocaleSource})
 	if err != nil {
 		return nil, err
 	}

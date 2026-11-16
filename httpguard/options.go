@@ -244,7 +244,7 @@ func credential(r *http.Request, o Options) (tok string, fromCookie bool) {
 }
 
 func meta(r *http.Request, o Options) guard.RequestMeta {
-	return guard.RequestMeta{IP: o.ClientIP(r), UserAgent: r.UserAgent()}
+	return guard.MetaFromRequest(r, o.ClientIP(r))
 }
 
 // Param reads a path parameter of the matched route through Options.PathValue.

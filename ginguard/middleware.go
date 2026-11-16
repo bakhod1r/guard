@@ -111,7 +111,7 @@ func useErrorLogger(c *gin.Context, o Options) {
 }
 
 func meta(c *gin.Context) guard.RequestMeta {
-	return guard.RequestMeta{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}
+	return guard.MetaFromRequest(c.Request, c.ClientIP())
 }
 
 // Authenticate attaches the principal when a valid token is present; never rejects.
