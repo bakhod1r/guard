@@ -4,7 +4,7 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
-## [v0.5.0] - 2026-11-16
+## [v0.5.2] - 2026-11-16
 
 ### Added
 - Selectable session store: `Config.SessionStore` (`SessionRedis`, the default, or `SessionPostgres`) and YAML `session.store`. `SessionPostgres` keeps the full session (device, network, status, timestamps) in `guard_session` through [sessionx](https://github.com/bakhod1r/sessionx)'s `sqlstore` (the User-Agent is parsed into brand, OS, browser, form factor and a human-or-bot verdict), so sessions survive Redis restarts, evictions and flushes. Needs migration `00008_guard_session`.
