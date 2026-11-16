@@ -60,7 +60,7 @@ environment and record the evidence (config file, dashboard, runbook link).
 
 ## 9. Backups
 - [ ] PostgreSQL: PITR (WAL archiving) + daily base backup; **rehearse a restore** and record RTO/RPO.
-- [ ] Redis: sessions are disposable (users re-login); RDB/AOF optional. Document that a Redis restore is not required for recovery.
+- [ ] Redis: with `session.store: redis` (default) sessions are disposable (users re-login); RDB/AOF optional. Use `session.store: postgres` when a Redis restart, eviction or flush must not sign anyone out; then Redis holds only caches and rate-limit counters.
 
 ## 10. Rate limits
 - [ ] Keep `ginguard.Options.AuthRateLimit` enabled (default 10/min per IP); never set `Limit < 0` in production.

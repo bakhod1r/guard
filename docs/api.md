@@ -76,7 +76,7 @@ Body: `{"error": {"code": "<code>", "message": "<text>"}}`.
 |---|---|---|
 | 400 | `invalid_body` | JSON binding failed |
 | 400 | `invalid_email` | `identity.ErrInvalidEmail` |
-| 400 | `weak_password` | `identity.ErrWeakPassword` |
+| 400 | `weak_password` | `identity.ErrWeakPassword` (also matches `ErrCommonPassword`, `ErrPasswordMatchesEmail`) |
 | 400 | `invalid_status` | `identity.ErrInvalidStatus` |
 | 400 | `invalid_user_id` | `identity.ErrInvalidUserID` |
 | 400 | `invalid_name` | `access.ErrInvalidName`, `apikey.ErrInvalidName` |
@@ -102,6 +102,8 @@ Body: `{"error": {"code": "<code>", "message": "<text>"}}`.
 | 429 | `account_locked` | `identity.ErrUserLocked` (never from `POST /login`, see below) |
 | 429 | `rate_limited` | rate limiter; sets `Retry-After` and `X-RateLimit-*` |
 | 500 | `internal` | anything unmapped; message is always `internal error`, cause attached via `c.Error` |
+
+Hosts that call the services directly (not through `ginguard`) map these errors themselves, with `errors.Is`. Password-policy rejections are typed values (`identity.ErrCommonPassword`, `identity.ErrPasswordMatchesEmail`) that match `identity.ErrWeakPassword`; check for `ErrWeakPassword`, or the rejection falls through to a 500.
 
 `POST /login` answers a locked, banned or suspended account with `401 invalid_credentials`, like a wrong password: distinct codes would enumerate accounts and confirm passwords. The cause is kept in the `auth.login` audit event.
 

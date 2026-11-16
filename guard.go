@@ -63,11 +63,30 @@ type (
 
 var ErrSessionRequired = errors.New("guard: this operation requires a session, not an API key")
 
+// SessionStore selects where login sessions are kept.
+type SessionStore string
+
+const (
+	// SessionRedis keeps sessions in Redis under RedisPrefix (the default). They expire with Redis's TTL and are lost if
+	// Redis loses its data.
+	SessionRedis SessionStore = "redis"
+	// SessionPostgres keeps sessions in the guard_session table through github.com/bakhod1r/sessionx/sqlstore: full
+	// session data (device, network, status, timestamps), durable across Redis restarts, evictions and flushes. Needs
+	// migration 00008 (kernel/migrations). Redis is still used for the access cache and the rate limiter.
+	SessionPostgres SessionStore = "postgres"
+)
+
 type Config struct {
 	DB    *pgxpool.Pool
 	Redis redis.UniversalClient
-	// RedisPrefix namespaces session keys. Default "guard:".
+	// RedisPrefix namespaces Redis keys (sessions with SessionRedis, and the cache and queues). Default "guard:".
 	RedisPrefix string
+	// SessionStore picks the session backend: SessionRedis (default) or SessionPostgres.
+	SessionStore SessionStore
+	// LegacyRedisSessions, with SessionPostgres, also reads sessions that still live in Redis and moves them to
+	// PostgreSQL on first use, so switching stores signs nobody out. Turn it off once the absolute session timeout
+	// has passed since the switch.
+	LegacyRedisSessions bool
 	// Session lifetime. Each zero field uses its default (30m idle / 7d absolute).
 	Session SessionPolicy
 	// Lockout for password guessing. Each zero field uses its default (5 attempts / 15m).
@@ -200,6 +219,19 @@ func New(cfg Config) (*Guard, error) {
 			cachePrefix = "guard:"
 		}
 	}
+	var sessions sessiondomain.Repository
+	switch cfg.SessionStore {
+	case "", SessionRedis:
+		sessions = sessioninfra.NewRedisSessions(cfg.Redis, cfg.RedisPrefix)
+	case SessionPostgres:
+		var legacy sessiondomain.Repository
+		if cfg.LegacyRedisSessions {
+			legacy = sessioninfra.NewRedisSessions(cfg.Redis, cfg.RedisPrefix)
+		}
+		sessions = sessioninfra.NewPostgresSessions(cfg.DB, sessionPolicy(cfg.Session), legacy)
+	default:
+		return nil, fmt.Errorf("guard: unknown Config.SessionStore %q (want %q or %q)", cfg.SessionStore, SessionRedis, SessionPostgres)
+	}
 	var auditLog audit.Log = audit.NewPostgres(cfg.DB)
 	var buffer *audit.RedisBuffer
 	if cfg.AuditBuffer.Enabled {
@@ -213,7 +245,7 @@ func New(cfg Config) (*Guard, error) {
 	g := Build(Repositories{
 		Users:    identityinfra.NewPostgresUsers(cfg.DB),
 		Hasher:   hasher,
-		Sessions: sessioninfra.NewRedisSessions(cfg.Redis, cfg.RedisPrefix),
+		Sessions: sessions,
 		Roles:    roles,
 		Policies: policies,
 		Audit:    auditLog,
