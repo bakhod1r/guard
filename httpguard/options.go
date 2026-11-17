@@ -31,7 +31,14 @@ type Options struct {
 	CookieName string
 	// InsecureCookie drops the Secure flag (local HTTP development only).
 	InsecureCookie bool
-	CookieDomain   string
+	// RefreshCookieName carries the refresh (session) token when access tokens
+	// are enabled. Default "guard_refresh". It never authenticates a request
+	// by itself: only the refresh and logout routes read it.
+	RefreshCookieName string
+	// RefreshCookiePath scopes the refresh cookie so the browser sends it only
+	// to the auth routes. Default AuthPath.
+	RefreshCookiePath string
+	CookieDomain      string
 	// AuthPath prefixes self-service routes. Default "/auth".
 	AuthPath string
 	// AdminPath prefixes management routes. Default "/guard".
@@ -95,6 +102,12 @@ func (o Options) withDefaults() Options {
 	}
 	if o.AuthPath == "" {
 		o.AuthPath = "/auth"
+	}
+	if o.RefreshCookieName == "" {
+		o.RefreshCookieName = "guard_refresh"
+	}
+	if o.RefreshCookiePath == "" {
+		o.RefreshCookiePath = o.AuthPath
 	}
 	if o.AdminPath == "" {
 		o.AdminPath = "/guard"

@@ -74,6 +74,9 @@ func Mount(r Router, g *guard.Guard, opts Options) {
 		auth("POST /register", h.register, limited...)
 	}
 	auth("POST /login", h.login, limited...)
+	if g.AccessTokensEnabled() {
+		auth("POST /refresh", h.refresh, limited...)
+	}
 	auth("GET /me", h.me, requireAuth)
 	auth("POST /authorize", h.authorize, requireAuth)
 	auth("POST /logout", h.logout, requireSession)
@@ -253,6 +256,14 @@ func (h *handlers) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.revokeCookieSession(r)
+	if res.Access != "" {
+		SetRefreshCookie(w, h.o, res.Token, res.Session)
+		writeJSON(w, r, http.StatusOK, struct {
+			TokenResponse
+			User any `json:"user"`
+		}{NewTokenResponse(res.Access, res.AccessClaims, res.Session), toUser(res.User)})
+		return
+	}
 	http.SetCookie(w, h.cookie(string(res.Token), int(time.Until(res.Session.ExpiresAt).Seconds())))
 	writeJSON(w, r, http.StatusOK, map[string]any{"token": res.Token, "expires_at": res.Session.ExpiresAt, "user": toUser(res.User)})
 }
@@ -279,22 +290,27 @@ func loginError(err error) error {
 // revokeCookieSession ends the session the login request already carried, so
 // a planted or stale cookie session cannot outlive the fresh login.
 func (h *handlers) revokeCookieSession(r *http.Request) {
-	c, err := r.Cookie(h.o.CookieName)
-	if err != nil || c.Value == "" {
-		return
-	}
-	ctx := r.Context()
-	p, err := h.g.Authenticate(ctx, c.Value)
-	if err != nil || p.Session == nil {
-		return
-	}
-	if err := h.g.Sessions.Revoke(ctx, p.Session.ID); err != nil {
-		logError(r, err)
+	for _, name := range []string{h.o.CookieName, h.o.RefreshCookieName} {
+		c, err := r.Cookie(name)
+		if err != nil || c.Value == "" {
+			continue
+		}
+		ctx := r.Context()
+		p, err := h.g.Authenticate(ctx, c.Value)
+		if err != nil || p.Session == nil || p.Access != nil {
+			continue
+		}
+		if err := h.g.Sessions.Revoke(ctx, p.Session.ID); err != nil {
+			logError(r, err)
+		}
 	}
 }
 
 func (h *handlers) clearCookie(w http.ResponseWriter) {
 	http.SetCookie(w, h.cookie("", -1))
+	if h.g.AccessTokensEnabled() {
+		ClearRefreshCookie(w, h.o)
+	}
 }
 
 func (h *handlers) logout(w http.ResponseWriter, r *http.Request) {

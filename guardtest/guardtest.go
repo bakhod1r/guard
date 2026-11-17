@@ -15,6 +15,7 @@ import (
 	identityinfra "github.com/bakhod1r/guard/identity/infrastructure"
 	"github.com/bakhod1r/guard/ratelimit"
 	sessioninfra "github.com/bakhod1r/guard/session/infrastructure"
+	"github.com/bakhod1r/guard/token"
 )
 
 // New returns a seeded in-memory Guard. cfg.DB and cfg.Redis are ignored;
@@ -31,6 +32,9 @@ func New(rdb redis.UniversalClient, cfg guard.Config) *guard.Guard {
 		APIKeys:  apikeyinfra.NewMemory(),
 		Limiter:  ratelimit.NewRedis(rdb, "guardtest:"),
 	}, cfg)
+	if g.AccessTokensEnabled() && !cfg.AccessToken.DisableRevocation {
+		g.SetAccessRevocations(token.NewRevocations(rdb, "guardtest:", g.AccessTTL()))
+	}
 	Seed(context.Background(), store)
 	return g
 }

@@ -38,6 +38,7 @@ import (
 	sessionapp "github.com/bakhod1r/guard/session/application"
 	sessiondomain "github.com/bakhod1r/guard/session/domain"
 	sessioninfra "github.com/bakhod1r/guard/session/infrastructure"
+	"github.com/bakhod1r/guard/token"
 )
 
 // Re-exported domain types so host apps need a single import.
@@ -60,7 +61,33 @@ type (
 	// AccessCacheOptions configures Config.AccessCache.
 	AccessCacheOptions = accessinfra.CacheOptions
 	AccessCacheStats   = accessinfra.CacheStats
+	// AccessClaims are the verified claims of an access token.
+	AccessClaims = token.Claims
+	// AccessKey is one access-token signing secret.
+	AccessKey = token.Key
 )
+
+// AccessTokenOptions turn on short-lived access tokens (Config.AccessToken):
+// stateless HS256 JWTs issued next to the session, which then acts as the
+// refresh token. Authenticate accepts both: an access token is checked by
+// signature and expiry only (plus the revocation list, see below), a session
+// token by a storage lookup as before.
+type AccessTokenOptions struct {
+	// Keys: the first signs, every key verifies (rotation). Secrets >= 32 bytes.
+	Keys []AccessKey
+	// TTL is the access token lifetime (default 15 minutes).
+	TTL time.Duration
+	// Issuer and Audience are written to iss/aud and required to match.
+	Issuer   string
+	Audience string
+	// DisableRevocation skips the Redis revocation list. Logout, RevokeAll,
+	// bans and password resets then take effect only when outstanding access
+	// tokens expire (bans still apply at once: the user row is re-read).
+	DisableRevocation bool
+}
+
+// AccessToken is a signed access token.
+type AccessToken string
 
 var ErrSessionRequired = errors.New("guard: this operation requires a session, not an API key")
 
@@ -118,6 +145,8 @@ type Config struct {
 	// floor make New fail. nil uses secure defaults. Legacy bcrypt hashes are
 	// always verified and upgraded on login.
 	PasswordHashParams *PasswordHashParams
+	// AccessToken enables access tokens (nil: sessions only, as before).
+	AccessToken *AccessTokenOptions
 	// AuditEmailKey (>= 32 random bytes, keep secret) makes login audit events
 	// store "email_hmac" (hex HMAC-SHA256, first 16 bytes) instead of the
 	// unkeyed "email_sha256" fingerprint, which is brute-forceable from a list
@@ -190,6 +219,9 @@ type Guard struct {
 	userColumn  string
 	// auditEmailKey is a private copy of Config.AuditEmailKey.
 	auditEmailKey []byte
+	// access issues and verifies access tokens (nil: disabled); revocations is nil when the list is off.
+	access      *token.Issuer
+	revocations *token.Revocations
 }
 
 func New(cfg Config) (*Guard, error) {
@@ -202,6 +234,11 @@ func New(cfg Config) (*Guard, error) {
 	hasher, err := passwordHasher(cfg.PasswordHashParams)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.AccessToken != nil {
+		if _, err := accessIssuer(*cfg.AccessToken); err != nil {
+			return nil, err
+		}
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -255,6 +292,10 @@ func New(cfg Config) (*Guard, error) {
 	}, cfg)
 	g.db, g.redis, g.auditBuffer = cfg.DB, cfg.Redis, buffer
 	g.accessCache, g.cachePrefix = cached, cachePrefix
+	if g.access != nil && !cfg.AccessToken.DisableRevocation {
+		g.revocations = token.NewRevocations(cfg.Redis, cfg.RedisPrefix, g.access.TTL())
+		g.Sessions.SetRevoker(g.revocations)
+	}
 	return g, nil
 }
 
@@ -308,7 +349,76 @@ func Build(r Repositories, cfg Config) *Guard {
 		defaultRole:   cfg.DefaultRole,
 	}
 	g.Access.SetSuperAdminBlocked(g.superAdminBlocked)
+	if cfg.AccessToken != nil {
+		iss, err := accessIssuer(*cfg.AccessToken)
+		if err != nil {
+			panic(err) // New validates first; Build callers pass options they control
+		}
+		g.access = iss
+	}
 	return g
+}
+
+func accessIssuer(o AccessTokenOptions) (*token.Issuer, error) {
+	iss, err := token.New(token.Options{Keys: o.Keys, TTL: o.TTL, Issuer: o.Issuer, Audience: o.Audience})
+	if err != nil {
+		return nil, fmt.Errorf("guard: Config.AccessToken: %w", err)
+	}
+	return iss, nil
+}
+
+// SetAccessRevocations installs a revocation list for access tokens (Build
+// callers with their own storage; New does it from Config).
+func (g *Guard) SetAccessRevocations(r *token.Revocations) {
+	g.revocations = r
+	if r == nil {
+		g.Sessions.SetRevoker(nil)
+		return
+	}
+	g.Sessions.SetRevoker(r)
+}
+
+// revokeFamily ends every session of the family and its access tokens.
+func (g *Guard) revokeFamily(ctx context.Context, u *User, family string) error {
+	if family == "" || u == nil {
+		return nil
+	}
+	list, err := g.Sessions.List(ctx, string(u.ID))
+	if err != nil {
+		return err
+	}
+	for _, s := range list {
+		if s.Family() == family {
+			if err := g.Sessions.Revoke(ctx, s.ID); err != nil {
+				return err
+			}
+		}
+	}
+	if g.revocations != nil {
+		return g.revocations.RevokeFamily(ctx, family)
+	}
+	return nil
+}
+
+// AccessTTL is the access token lifetime (0 when disabled).
+func (g *Guard) AccessTTL() time.Duration {
+	if g.access == nil {
+		return 0
+	}
+	return g.access.TTL()
+}
+
+// AccessTokensEnabled reports whether Config.AccessToken is set.
+func (g *Guard) AccessTokensEnabled() bool { return g.access != nil }
+
+// IssueAccess signs an access token for s (the session, or refresh token, it
+// derives from). ok is false when access tokens are disabled.
+func (g *Guard) IssueAccess(s *Session) (tok AccessToken, claims AccessClaims, ok bool) {
+	if g.access == nil || s == nil {
+		return "", AccessClaims{}, false
+	}
+	raw, c := g.access.Issue(s.UserID, string(s.ID), s.Family(), time.Now())
+	return AccessToken(raw), c, true
 }
 
 // sessionPolicy fills each zero field separately: a policy that only sets
@@ -537,7 +647,11 @@ func (g *Guard) ResetPassword(ctx context.Context, actorID, userID, password str
 type LoginResult struct {
 	User    *User
 	Session *Session
-	Token   SessionToken
+	// Token is the session token; with access tokens enabled it is the refresh token.
+	Token SessionToken
+	// Access and AccessClaims are set when access tokens are enabled.
+	Access       AccessToken
+	AccessClaims AccessClaims
 }
 
 func (g *Guard) Login(ctx context.Context, email, password string, meta RequestMeta) (*LoginResult, error) {
@@ -560,7 +674,9 @@ func (g *Guard) Login(ctx context.Context, email, password string, meta RequestM
 	}
 	g.record(ctx, audit.Event{ActorID: string(u.ID), Action: "auth.login", Target: string(u.ID), Success: true, IP: meta.IP, UserAgent: meta.UserAgent,
 		Metadata: g.auditEmail(email, map[string]any{})})
-	return &LoginResult{User: u, Session: s, Token: tok}, nil
+	res := &LoginResult{User: u, Session: s, Token: tok}
+	res.Access, res.AccessClaims, _ = g.IssueAccess(s)
+	return res, nil
 }
 
 // confirmLogin re-reads the account after the session exists. A password
@@ -584,23 +700,35 @@ func (g *Guard) Logout(ctx context.Context, p *Principal, meta RequestMeta) erro
 	if err := g.Sessions.Revoke(ctx, p.Session.ID); err != nil {
 		return err
 	}
+	if p.Access != nil {
+		// the token may name a session already rotated away: end whatever session of its family is current
+		if err := g.revokeFamily(ctx, p.User, p.Access.Family); err != nil {
+			return err
+		}
+	}
 	g.record(ctx, audit.Event{ActorID: string(p.User.ID), Action: "auth.logout", Success: true, IP: meta.IP, UserAgent: meta.UserAgent})
 	return nil
 }
 
 // Principal is the authenticated caller of a request. Exactly one of
-// Session and APIKey is set.
+// Session and APIKey is set. For an access token, Access holds its claims and
+// Session is built from them: only ID, UserID, CreatedAt, LastSeenAt,
+// ExpiresAt (the token's expiry) and the family are meaningful.
 type Principal struct {
 	User    *User
 	Session *Session
 	APIKey  *APIKey
+	Access  *AccessClaims
 	Roles   []Role
 }
 
-// Authenticate resolves a session token or an API key ("gk_...") into a
-// principal. The user row is re-read on every call so bans and role changes
-// apply immediately.
+// Authenticate resolves a session token, an access token (when enabled) or
+// an API key ("gk_...") into a principal. The user row is re-read on every
+// call so bans and role changes apply immediately.
 func (g *Guard) Authenticate(ctx context.Context, credential string) (*Principal, error) {
+	if g.access != nil && token.LooksLikeJWT(credential) {
+		return g.authenticateAccess(ctx, credential)
+	}
 	if apikeydomain.LooksLikeKey(credential) {
 		k, err := g.APIKeys.Resolve(ctx, apikeydomain.Token(credential))
 		if err != nil {
@@ -613,6 +741,21 @@ func (g *Guard) Authenticate(ctx context.Context, credential string) (*Principal
 		return nil, err
 	}
 	return g.principal(ctx, s.UserID, &Principal{Session: s}, func() { _ = g.Sessions.Revoke(ctx, s.ID) })
+}
+
+func (g *Guard) authenticateAccess(ctx context.Context, raw string) (*Principal, error) {
+	c, err := g.access.Verify(raw, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if g.revocations != nil {
+		if err := g.revocations.Check(ctx, c); err != nil {
+			return nil, err
+		}
+	}
+	s := &Session{ID: sessiondomain.ID(c.SessionID), UserID: c.UserID, CreatedAt: c.IssuedAt, LastSeenAt: c.IssuedAt,
+		ExpiresAt: c.ExpiresAt, Metadata: map[string]string{sessiondomain.FamilyKey: c.Family}}
+	return g.principal(ctx, c.UserID, &Principal{Session: s, Access: &c}, func() {})
 }
 
 func (g *Guard) principal(ctx context.Context, userID string, p *Principal, onMissingUser func()) (*Principal, error) {

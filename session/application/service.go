@@ -3,16 +3,32 @@ package application
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 
 	"github.com/bakhod1r/guard/session/domain"
 )
 
 type Service struct {
-	repo   domain.Repository
-	policy domain.Policy
-	now    func() time.Time
+	repo    domain.Repository
+	policy  domain.Policy
+	now     func() time.Time
+	revoker Revoker
 }
+
+// Revoker hears about sign-outs so credentials derived from a session (access
+// tokens) can be invalidated before they expire on their own.
+type Revoker interface {
+	RevokeFamily(ctx context.Context, family string) error
+	RevokeUser(ctx context.Context, userID string, at time.Time) error
+}
+
+// SetRevoker installs r (nil removes it). Revoke and RevokeAll call it.
+func (s *Service) SetRevoker(r Revoker) { s.revoker = r }
+
+// Policy is the lifetime policy sessions are created with.
+func (s *Service) Policy() domain.Policy { return s.policy }
 
 func NewService(repo domain.Repository, p domain.Policy) *Service {
 	return &Service{repo: repo, policy: p, now: time.Now}
@@ -34,6 +50,16 @@ func (s *Service) Start(ctx context.Context, in StartInput) (*domain.Session, do
 	sess, tok := domain.New(in.UserID, now, s.policy)
 	sess.IP, sess.UserAgent, sess.Metadata = in.IP, in.UserAgent, in.Metadata
 	sess.Forwarded, sess.Locale, sess.LocaleSource = in.Forwarded, in.Locale, in.LocaleSource
+	if s.revoker != nil { // a family only matters when access tokens can be revoked by it
+		meta := make(map[string]string, len(in.Metadata)+1)
+		for k, v := range in.Metadata {
+			meta[k] = v
+		}
+		var fam [16]byte
+		_, _ = rand.Read(fam[:])
+		meta[domain.FamilyKey] = hex.EncodeToString(fam[:])
+		sess.Metadata = meta
+	}
 	if err := s.save(ctx, sess, sess.TTL(now, s.policy)); err != nil {
 		return nil, "", err
 	}
@@ -150,9 +176,32 @@ func (s *Service) rotateTaken(ctx context.Context, taker domain.Taker, tok domai
 	return &next, newTok, nil
 }
 
-func (s *Service) Revoke(ctx context.Context, id domain.ID) error { return s.repo.Delete(ctx, id) }
+// Revoke ends one session and, with a Revoker, its access tokens.
+func (s *Service) Revoke(ctx context.Context, id domain.ID) error {
+	var family string
+	if s.revoker != nil {
+		if sess, err := s.repo.Get(ctx, id); err == nil {
+			family = sess.Family()
+		}
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if family != "" {
+		return s.revoker.RevokeFamily(ctx, family)
+	}
+	return nil
+}
 
+// RevokeAll ends every session of userID and, with a Revoker, every access
+// token issued to the user so far. The access tokens go first: a failure then
+// leaves the sessions in place for a retry instead of live tokens behind.
 func (s *Service) RevokeAll(ctx context.Context, userID string) error {
+	if s.revoker != nil {
+		if err := s.revoker.RevokeUser(ctx, userID, s.now().UTC()); err != nil {
+			return err
+		}
+	}
 	return s.repo.DeleteByUser(ctx, userID)
 }
 

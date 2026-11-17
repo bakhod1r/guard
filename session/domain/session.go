@@ -73,6 +73,20 @@ func New(userID string, now time.Time, p Policy) (*Session, Token) {
 	return s, tok
 }
 
+// FamilyKey is the Metadata key of the session family: a random id set at
+// Start and kept by Rotate, so credentials derived from any token of the
+// session (access tokens) can be revoked together.
+const FamilyKey = "guard_family"
+
+// Family is the session family, or the session id for sessions created
+// before families existed.
+func (s *Session) Family() string {
+	if f := s.Metadata[FamilyKey]; f != "" {
+		return f
+	}
+	return string(s.ID)
+}
+
 // Valid reports whether the session is alive at now.
 func (s *Session) Valid(now time.Time, p Policy) error {
 	if !now.Before(s.ExpiresAt) || now.Sub(s.LastSeenAt) >= p.IdleTimeout {

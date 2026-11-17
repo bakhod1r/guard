@@ -4,6 +4,13 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [v0.6.0] - 2026-11-17
+
+### Added
+- **Access tokens.** `Config.AccessToken` (`AccessTokenOptions`, YAML `access_token.*`) issues short-lived, stateless HS256 JWTs (package `token`: only HS256 is accepted, so `alg: none` and algorithm confusion are refused; `kid` selects the key, the first key signs and every key verifies for rotation; secrets >= 32 bytes; claims `sub`, `sid`, `fam`, `jti`, `iat`, `nbf`, `exp`, `iss`, `aud`). The session then acts as the refresh token. `Guard.Authenticate` accepts an access token next to session tokens and API keys: signature, time window, issuer and audience are checked without storage; the user row is still re-read, so bans apply at once. The principal gets `Access` (the claims) and a `Session` built from them, so `RequireSession`, logout and "current session" keep working. `Guard.IssueAccess`, `Guard.AccessTokensEnabled`, `Guard.AccessTTL`; `LoginResult.Access` / `AccessClaims`. Nil `AccessToken` keeps the previous behaviour.
+- Access-token revocation: `token.Revocations` (Redis, entries live one access TTL) remembers signed-out session families and users. `Sessions.Revoke` revokes the session's family, `Sessions.RevokeAll` every token issued to the user until then (millisecond precision, so a login right after still works), `Guard.Logout` with an access token ends its family even if the token names a session rotated away. Sessions carry a random family id (`Metadata["guard_family"]`, kept by `Rotate`; `Session.Family()` falls back to the id for older sessions). `sessionapp.Service.SetRevoker`, `Guard.SetAccessRevocations`. `AccessTokenOptions.DisableRevocation` turns the list off. Token errors wrap `ErrSessionNotFound` / `ErrSessionExpired`, so existing "credential rejected" checks need no change; a Redis outage is an error, not a rejection.
+- `httpguard`: with access tokens, `POST /auth/login` answers `{access_token, token_type, expires_at, expires_in, refresh_expires_at, user}` and puts the refresh token only in an HttpOnly, Secure, SameSite=Strict cookie (`Options.RefreshCookieName`, default `guard_refresh`, `Options.RefreshCookiePath`, default `AuthPath`); new `POST /auth/refresh` rotates it (cookie with the CSRF origin check, or `Authorization: Bearer <refresh>` for non-browser clients) and returns a new access token. The refresh cookie never authenticates other requests. Helpers for hosts with their own auth routes: `SetRefreshCookie`, `ClearRefreshCookie`, `RefreshTokenFrom`, `CSRFOK`, `NewTokenResponse`.
+
 ## [v0.5.2] - 2026-11-16
 
 ### Added

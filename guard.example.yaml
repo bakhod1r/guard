@@ -38,6 +38,21 @@ session:
   # With store: postgres, also pick up sessions still in Redis and move them over (turn off after `absolute`).
   legacy_redis: false
 
+# Short-lived access tokens (HS256 JWT). The session then acts as the refresh
+# token (httpguard keeps it in an HttpOnly "guard_refresh" cookie scoped to
+# the auth path and adds POST /auth/refresh). Disabled by default.
+access_token:
+  enabled: false
+  # base64 secrets >= 32 bytes; the first signs, all verify (rotation).
+  keys:
+    - id: k1
+      secret: ${GUARD_ACCESS_KEY}
+  ttl: 15m
+  issuer: guard
+  audience: guard
+  # true skips the Redis revocation list: logout then waits for expiry.
+  disable_revocation: false
+
 lockout:
   # Failed logins before the account is temporarily locked.
   attempts: 5

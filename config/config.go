@@ -65,6 +65,19 @@ type File struct {
 		// LegacyRedis, with store "postgres", also reads sessions still in Redis and moves them over.
 		LegacyRedis bool `yaml:"legacy_redis"`
 	} `yaml:"session"`
+	// AccessToken enables short-lived access tokens; the session becomes the refresh token.
+	AccessToken struct {
+		Enabled bool `yaml:"enabled"`
+		// Keys: base64 (std) secrets of >= 32 bytes, e.g. "${GUARD_ACCESS_KEY}"; the first signs, all verify.
+		Keys []struct {
+			ID     string `yaml:"id"`
+			Secret string `yaml:"secret"`
+		} `yaml:"keys"`
+		TTL               Duration `yaml:"ttl"`
+		Issuer            string   `yaml:"issuer"`
+		Audience          string   `yaml:"audience"`
+		DisableRevocation bool     `yaml:"disable_revocation"`
+	} `yaml:"access_token"`
 	Lockout struct {
 		Attempts int      `yaml:"attempts"`
 		Window   Duration `yaml:"window"`
@@ -96,15 +109,17 @@ type File struct {
 		AutoApply bool   `yaml:"auto_apply"`
 	} `yaml:"migrations"`
 	HTTP struct {
-		CookieName     string   `yaml:"cookie_name"`
-		InsecureCookie bool     `yaml:"insecure_cookie"`
-		CookieDomain   string   `yaml:"cookie_domain"`
-		AuthPath       string   `yaml:"auth_path"`
-		AdminPath      string   `yaml:"admin_path"`
-		TrustedOrigins []string `yaml:"trusted_origins"`
-		MaxBodyBytes   int64    `yaml:"max_body_bytes"`
-		HSTS           bool     `yaml:"hsts"`
-		AuthRateLimit  struct {
+		CookieName        string   `yaml:"cookie_name"`
+		RefreshCookieName string   `yaml:"refresh_cookie_name"`
+		RefreshCookiePath string   `yaml:"refresh_cookie_path"`
+		InsecureCookie    bool     `yaml:"insecure_cookie"`
+		CookieDomain      string   `yaml:"cookie_domain"`
+		AuthPath          string   `yaml:"auth_path"`
+		AdminPath         string   `yaml:"admin_path"`
+		TrustedOrigins    []string `yaml:"trusted_origins"`
+		MaxBodyBytes      int64    `yaml:"max_body_bytes"`
+		HSTS              bool     `yaml:"hsts"`
+		AuthRateLimit     struct {
 			// Limit -1 disables auth rate limiting; 0 uses the default.
 			Limit  int      `yaml:"limit"`
 			Window Duration `yaml:"window"`
@@ -164,6 +179,9 @@ func (f *File) Validate() error {
 	if _, err := f.auditEmailKey(); err != nil {
 		return err
 	}
+	if _, err := f.accessToken(); err != nil {
+		return err
+	}
 	nonNeg := []struct {
 		name string
 		v    int64
@@ -177,6 +195,7 @@ func (f *File) Validate() error {
 		{"audit.async_buffer", int64(f.Audit.AsyncBuffer)},
 		{"audit.redis_buffer.batch_size", int64(f.Audit.RedisBuffer.BatchSize)},
 		{"audit.redis_buffer.interval", int64(f.Audit.RedisBuffer.Interval)},
+		{"access_token.ttl", int64(f.AccessToken.TTL)},
 		{"access_cache.ttl", int64(f.AccessCache.TTL)},
 		{"access_cache.max_entries", int64(f.AccessCache.MaxEntries)},
 		{"access_cache.shared_ttl", int64(f.AccessCache.SharedTTL)},
@@ -189,6 +208,29 @@ func (f *File) Validate() error {
 		}
 	}
 	return nil
+}
+
+// accessToken decodes access_token; nil when disabled.
+func (f *File) accessToken() (*guard.AccessTokenOptions, error) {
+	a := f.AccessToken
+	if !a.Enabled {
+		return nil, nil
+	}
+	if len(a.Keys) == 0 {
+		return nil, fmt.Errorf("config: access_token.keys is required when access_token.enabled is true")
+	}
+	o := &guard.AccessTokenOptions{TTL: time.Duration(a.TTL), Issuer: a.Issuer, Audience: a.Audience, DisableRevocation: a.DisableRevocation}
+	for i, k := range a.Keys {
+		b, err := base64.StdEncoding.DecodeString(k.Secret)
+		if err != nil {
+			return nil, fmt.Errorf("config: access_token.keys[%d].secret must be base64: %w", i, err)
+		}
+		if len(b) < 32 {
+			return nil, fmt.Errorf("config: access_token.keys[%d].secret must decode to at least 32 bytes, got %d", i, len(b))
+		}
+		o.Keys = append(o.Keys, guard.AccessKey{ID: k.ID, Secret: b})
+	}
+	return o, nil
 }
 
 // auditEmailKey decodes audit.email_key; empty means no key.
@@ -225,6 +267,7 @@ func (f *File) guardConfig() guard.Config {
 			Interval: time.Duration(f.Audit.RedisBuffer.Interval)},
 	}
 	c.AuditEmailKey, _ = f.auditEmailKey() // validated in Parse
+	c.AccessToken, _ = f.accessToken()
 	if f.AccessCache.Enabled {
 		c.AccessCache = &guard.AccessCacheOptions{TTL: time.Duration(f.AccessCache.TTL), MaxEntries: f.AccessCache.MaxEntries,
 			L2: f.AccessCache.Shared, L2TTL: time.Duration(f.AccessCache.SharedTTL)}
