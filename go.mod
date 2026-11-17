@@ -2,7 +2,7 @@ module github.com/bakhod1r/guard
 
 go 1.26.2
 
-toolchain go1.26.6
+toolchain go1.26.11
 
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
