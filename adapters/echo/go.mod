@@ -5,7 +5,7 @@ go 1.26.2
 require (
 	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/bakhod1r/guard v0.2.0
-	github.com/labstack/echo/v4 v4.16.3
+	github.com/labstack/echo/v4 v4.16.5
 	github.com/redis/go-redis/v9 v9.22.0
 )
 
