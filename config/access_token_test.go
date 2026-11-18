@@ -33,3 +33,23 @@ func TestAccessTokenConfig(t *testing.T) {
 		t.Fatal("guardConfig dropped access_token")
 	}
 }
+
+func TestValidateSessionStoreAndAccessToken(t *testing.T) {
+	f := valid(t, "")
+	f.Session.Store = "memcached"
+	if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "session.store") {
+		t.Fatalf("store: %v", err)
+	}
+	f = valid(t, "")
+	f.AccessToken.Enabled = true
+	if err := f.Validate(); err == nil || !strings.Contains(err.Error(), "access_token.keys") {
+		t.Fatalf("access token: %v", err)
+	}
+	f.AccessToken.Keys = append(f.AccessToken.Keys, struct {
+		ID     string `yaml:"id"`
+		Secret string `yaml:"secret"`
+	}{ID: "k1", Secret: "not base64!"})
+	if _, err := f.accessToken(); err == nil || !strings.Contains(err.Error(), "must be base64") {
+		t.Fatalf("base64: %v", err)
+	}
+}

@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/bakhod1r/guard"
@@ -66,10 +66,10 @@ func setup(t *testing.T) (client, *guard.Guard) {
 	opts := echoguard.Options{AuthRateLimit: ratelimit.Rule{Limit: -1}, CreateUser: hostUsers()}
 	echoguard.Mount(e, g, opts, "/api")
 	echoguard.MountAdmin(e, g, adminui.Options{InsecureCookie: true})
-	e.GET("/api/invoices/:id", func(c echo.Context) error {
+	e.GET("/api/invoices/:id", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]any{"id": c.Param("id"), "user": string(echoguard.PrincipalFrom(c).User.ID)})
 	}, echoguard.RequirePermission(g, opts, "invoice.read"))
-	e.GET("/api/users/:id/profile", func(c echo.Context) error {
+	e.GET("/api/users/:id/profile", func(c *echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]any{"id": c.Param("id")})
 	}, echoguard.Require(g, opts, "user", "read", echoguard.ParamResource("id")))
 	return client{t: t, e: e}, g

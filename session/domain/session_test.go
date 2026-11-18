@@ -36,3 +36,14 @@ func TestTokensUnique(t *testing.T) {
 		t.Fatal("weak tokens")
 	}
 }
+
+func TestFamily(t *testing.T) {
+	s := &Session{ID: "sid"}
+	if s.Family() != "sid" {
+		t.Fatalf("legacy family: %q", s.Family())
+	}
+	s.Metadata = map[string]string{FamilyKey: "fam"}
+	if s.Family() != "fam" {
+		t.Fatalf("family: %q", s.Family())
+	}
+}

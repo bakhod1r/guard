@@ -11,7 +11,7 @@ Everything else is a thin translation of it.
 | httprouter | `httpguard` + `Options.PathValue` from `httprouter.ParamsFromContext` | none |
 | negroni, alice, any `http.Handler` chain | `httpguard` middleware as is | none |
 | Gin | `github.com/bakhod1r/guard/ginguard` | gin (already required) |
-| Echo | `github.com/bakhod1r/guard/adapters/echo` | echo/v4 |
+| Echo | `github.com/bakhod1r/guard/adapters/echo` | echo/v5 |
 | Fiber | `github.com/bakhod1r/guard/adapters/fiber` | fiber/v2 |
 | Iris | `github.com/bakhod1r/guard/adapters/iris` | iris/v12 |
 | Hertz | `github.com/bakhod1r/guard/adapters/hertz` | hertz |

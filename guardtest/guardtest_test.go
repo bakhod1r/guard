@@ -57,3 +57,21 @@ func TestNewSeedsRolesPermissionsAndPolicies(t *testing.T) {
 		t.Fatal("guard not fully wired")
 	}
 }
+
+func TestNewWiresAccessRevocations(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	g := New(rdb, guard.Config{AccessToken: &guard.AccessTokenOptions{
+		Keys: []guard.AccessKey{{ID: "k1", Secret: []byte("0123456789abcdef0123456789abcdef")}}}})
+	if !g.AccessTokensEnabled() {
+		t.Fatal("access tokens not enabled")
+	}
+	ctx := context.Background()
+	if err := g.Sessions.RevokeAll(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(mr.Keys()) == 0 {
+		t.Fatal("RevokeAll did not record an access revocation")
+	}
+}

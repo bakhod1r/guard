@@ -4,6 +4,17 @@ All notable changes are documented here. Format: [Keep a Changelog](https://keep
 
 ## [Unreleased]
 
+## [v0.6.1] - 2026-11-18
+
+### Changed
+- **Breaking (`adapters/echo`):** the Echo adapter moves to `github.com/labstack/echo/v5` (v5.4.6). Echo v4 has unfixed advisories GO-2026-6875 (reverse proxy forwards a spoofed X-Real-IP) and GO-2026-6872 (rate limiter bypass via a spoofed X-Forwarded-For). `PrincipalFrom` takes `*echo.Context`; `Routes` reads `e.Router().Routes()`.
+
+### Security
+- Go toolchain go1.26.11 (stdlib `net/http` and `crypto/x509` advisories fixed in go1.26.9–go1.26.11). `adapters/fiber` and `adapters/iris`: `andybalholm/brotli` v1.2.7.
+
+### Tests
+- Every package back at 100% coverage: access tokens, refresh flow, the PostgreSQL session store and role-bound policies.
+
 ## [v0.6.0] - 2026-11-17
 
 ### Added

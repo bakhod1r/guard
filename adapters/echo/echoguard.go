@@ -10,7 +10,7 @@ package echoguard
 import (
 	"net/http"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/bakhod1r/guard"
 	"github.com/bakhod1r/guard/adminui"
@@ -22,12 +22,12 @@ import (
 type Options = httpguard.Options
 
 // PrincipalFrom returns the authenticated caller, or nil.
-func PrincipalFrom(c echo.Context) *guard.Principal {
+func PrincipalFrom(c *echo.Context) *guard.Principal {
 	return httpguard.PrincipalFrom(c.Request())
 }
 
 // withParams makes httpguard read path parameters through echo.Context.
-func withParams(o Options, c echo.Context) Options {
+func withParams(o Options, c *echo.Context) Options {
 	o.PathValue = func(_ *http.Request, name string) string { return c.Param(name) }
 	o.RoutePattern = func(*http.Request) string { return c.Path() }
 	o.ClientIP = func(*http.Request) string { return c.RealIP() }
@@ -39,7 +39,7 @@ func withParams(o Options, c echo.Context) Options {
 // wired to echo.Context) so every httpguard constructor can be used as is.
 func Wrap(opts Options, build func(Options) httpguard.Middleware) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+		return func(c *echo.Context) error {
 			var err error
 			handled := false
 			h := build(withParams(opts, c))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -127,8 +127,8 @@ func MountAdmin(e *echo.Echo, g *guard.Guard, opts adminui.Options) {
 
 // Routes reports the host's routes for httpguard.SyncRoutes and Autoseed.
 func Routes(e *echo.Echo) []httpguard.Route {
-	out := make([]httpguard.Route, 0, len(e.Routes()))
-	for _, r := range e.Routes() {
+	out := make([]httpguard.Route, 0, len(e.Router().Routes()))
+	for _, r := range e.Router().Routes() {
 		out = append(out, httpguard.Route{Method: r.Method, Path: r.Path})
 	}
 	return out
